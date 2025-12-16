@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { chat, chatStream, chatStandalone } from "../controllers/chatController.js";
+import { chat, chatStream, chatStandalone, chatAggregated, getAllTools } from "../controllers/chatController.js";
 
 const router = Router();
 
@@ -12,6 +12,12 @@ const router = Router();
 
 // Standalone chat - no MCP session required
 router.post("/chat", chatStandalone);
+
+// Aggregated chat - uses tools from ALL connected sessions
+router.post("/chat/aggregated", chatAggregated);
+
+// Get all tools from all sessions
+router.get("/tools", getAllTools);
 
 // Chat with LLM + MCP tools (session required)
 router.post("/session/:sessionId/chat", chat);

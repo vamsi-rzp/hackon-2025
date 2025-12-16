@@ -69,6 +69,15 @@ export const config = {
       autoConnect: true,
       tags: ["demo", "utilities"],
     },
+
+    {
+      id: "mermaid-mcp",
+      name: "Mermaid MCP",
+      description: "Mermaid MCP server",
+      url: "https://mcp.mermaidchart.com/sse",
+      autoConnect: true,
+      tags: ["mermaid", "mcp"],
+    },
     // Add more built-in presets here as needed
     ...parsePresets(),
   ] as McpPreset[],

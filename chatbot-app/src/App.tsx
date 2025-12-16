@@ -1,19 +1,19 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Bot, Send, Loader2, Plug, Sparkles, X, Zap, Wrench, Plus } from 'lucide-react';
-import type { Message, Session } from './types';
-import { api, type ChatMessage as ApiChatMessage, type PresetInfo } from './api';
+import { Bot, Send, Loader2, Sparkles, X, Zap, Wrench, Plus } from 'lucide-react';
+import type { Message } from './types';
+import { api, type ChatMessage as ApiChatMessage, type PresetInfo, type AggregatedTool } from './api';
 import './App.css';
 
 const BOT_NAME = 'Atlas';
 
 function App() {
-  const [session, setSession] = useState<Session | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [chatHistory, setChatHistory] = useState<ApiChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [isConnecting, setIsConnecting] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [presets, setPresets] = useState<PresetInfo[]>([]);
+  const [allTools, setAllTools] = useState<AggregatedTool[]>([]);
   const [showToolsPanel, setShowToolsPanel] = useState(false);
   const [serverUrl, setServerUrl] = useState('');
   
@@ -21,35 +21,30 @@ function App() {
   const inputRef = useRef<HTMLInputElement>(null);
   const initializedRef = useRef(false);
 
-  // Fetch presets and auto-connect to already connected ones
+  // Fetch presets and all tools on init
   useEffect(() => {
     if (initializedRef.current) return;
     initializedRef.current = true;
 
     const initializeApp = async () => {
       try {
-        const res = await api.getPresets();
-        setPresets(res.presets);
-
-        // Find any preset that's already connected
-        const connectedPreset = res.presets.find(p => p.status === 'connected' && p.sessionId);
+        // Fetch presets and all tools in parallel
+        const [presetsRes, toolsRes] = await Promise.all([
+          api.getPresets(),
+          api.getAllTools(),
+        ]);
         
-        if (connectedPreset && connectedPreset.sessionId) {
-          // Auto-use the already connected preset
-          const toolsRes = await api.getTools(connectedPreset.sessionId);
-          setSession({
-            sessionId: connectedPreset.sessionId,
-            serverUrl: connectedPreset.url,
-            tools: toolsRes.tools,
-            connectedAt: new Date(),
-          });
+        setPresets(presetsRes.presets);
+        setAllTools(toolsRes.tools);
 
+        const connectedCount = presetsRes.presets.filter(p => p.status === 'connected').length;
+        
+        if (toolsRes.count > 0) {
           addMessage({
             role: 'bot',
-            content: `Hi! I'm **${BOT_NAME}**, your AI assistant. 🤖\n\nI'm powered by **AWS Bedrock** and connected to **${connectedPreset.name}** with **${toolsRes.tools.length} tools**!\n\nAvailable tools: ${toolsRes.tools.map(t => `**${t.name}**`).join(', ')}\n\nJust ask me anything naturally!`,
+            content: `Hi! I'm **${BOT_NAME}**, your AI assistant. 🤖\n\nI'm powered by **AWS Bedrock** and connected to **${connectedCount} MCP server(s)** with **${toolsRes.count} tools**!\n\nAvailable tools: ${toolsRes.tools.map(t => `**${t.name}**`).join(', ')}\n\nJust ask me anything naturally!`,
           });
         } else {
-          // No connected preset, show regular welcome
           addMessage({
             role: 'bot',
             content: `Hi! I'm **${BOT_NAME}**, your AI assistant. 🤖\n\nI'm powered by **AWS Bedrock** and ready to chat!\n\n💡 **Tip**: Click the **🔧 Tools** button to connect MCP servers and unlock additional capabilities like weather, calculations, and more.`,
@@ -89,23 +84,28 @@ function App() {
     setMessages(prev => prev.map(m => m.id === id ? { ...m, ...updates } : m));
   }, []);
 
+  // Refresh tools from all sessions
+  const refreshTools = async () => {
+    try {
+      const toolsRes = await api.getAllTools();
+      setAllTools(toolsRes.tools);
+    } catch (err) {
+      console.error('Failed to refresh tools:', err);
+    }
+  };
+
   const handleConnectPreset = async (preset: PresetInfo) => {
     setIsConnecting(true);
     try {
       const response = await api.connectPreset(preset.id);
-      const toolsRes = await api.getTools(response.sessionId);
-      
-      setSession({
-        sessionId: response.sessionId,
-        serverUrl: preset.url,
-        tools: toolsRes.tools,
-        connectedAt: new Date(response.connectedAt),
-      });
       
       // Update preset status locally
       setPresets(prev => prev.map(p => 
         p.id === preset.id ? { ...p, status: 'connected', sessionId: response.sessionId } : p
       ));
+      
+      // Refresh all tools
+      await refreshTools();
       
       addMessage({
         role: 'system',
@@ -129,12 +129,9 @@ function App() {
     setIsConnecting(true);
     try {
       const response = await api.connect(serverUrl);
-      setSession({
-        sessionId: response.sessionId,
-        serverUrl: response.serverUrl,
-        tools: response.tools,
-        connectedAt: new Date(response.connectedAt),
-      });
+      
+      // Refresh all tools
+      await refreshTools();
       
       addMessage({
         role: 'system',
@@ -153,21 +150,24 @@ function App() {
     }
   };
 
-  const handleDisconnect = async () => {
-    if (session) {
-      await api.disconnect(session.sessionId);
+  const handleDisconnect = async (presetId: string, sessionId: string) => {
+    try {
+      await api.disconnect(sessionId);
       
-      // Update preset status if it was a preset connection
+      // Update preset status
       setPresets(prev => prev.map(p => 
-        p.sessionId === session.sessionId ? { ...p, status: 'disconnected', sessionId: undefined } : p
+        p.id === presetId ? { ...p, status: 'disconnected', sessionId: undefined } : p
       ));
+      
+      // Refresh all tools
+      await refreshTools();
       
       addMessage({
         role: 'system',
-        content: `🔌 Disconnected from MCP server. You can still chat without tools!`,
+        content: `🔌 Disconnected from MCP server.`,
       });
-      
-      setSession(null);
+    } catch (err) {
+      console.error('Failed to disconnect:', err);
     }
   };
 
@@ -187,9 +187,9 @@ function App() {
     });
 
     try {
-      // If we have a session with tools, use the session chat
-      if (session) {
-        const response = await api.chat(session.sessionId, userInput, chatHistory);
+      // If we have tools, use aggregated chat (routes to all sessions)
+      if (allTools.length > 0) {
+        const response = await api.chatAggregated(userInput, chatHistory);
         
         setChatHistory(prev => [
           ...prev,
@@ -211,7 +211,7 @@ function App() {
           isLoading: false,
         });
       } else {
-        // No session - use standalone chat
+        // No tools - use standalone chat
         const response = await api.chatStandalone(userInput, chatHistory);
         
         setChatHistory(prev => [
@@ -245,8 +245,11 @@ function App() {
     inputRef.current?.focus();
   };
 
-  const suggestions = session 
-    ? ['What can you help me with?', 'Calculate 25 * 17', "What's the weather in Tokyo?"]
+  const hasTools = allTools.length > 0;
+  const connectedServers = presets.filter(p => p.status === 'connected').length;
+
+  const suggestions = hasTools 
+    ? ['What can you help me with?', 'Calculate 25 * 17', "What's the weather in Tokyo?", 'Create a flowchart']
     : ['Tell me a joke', 'Explain quantum computing', 'Write a haiku about coding'];
 
   return (
@@ -260,24 +263,19 @@ function App() {
           <div className="header-info">
             <h1>{BOT_NAME}</h1>
             <span className="status online">
-              {session ? `🔧 ${session.tools.length} tools connected` : '💬 Chat mode'}
+              {hasTools ? `🔧 ${allTools.length} tools (${connectedServers} servers)` : '💬 Chat mode'}
             </span>
           </div>
         </div>
         <div className="header-actions">
           <button 
-            className={`tools-btn ${session ? 'connected' : ''}`}
+            className={`tools-btn ${hasTools ? 'connected' : ''}`}
             onClick={() => setShowToolsPanel(!showToolsPanel)}
           >
             <Wrench size={18} />
             Tools
-            {session && <span className="tool-count">{session.tools.length}</span>}
+            {hasTools && <span className="tool-count">{allTools.length}</span>}
           </button>
-          {session && (
-            <button className="disconnect-btn" onClick={handleDisconnect}>
-              <X size={18} />
-            </button>
-          )}
         </div>
       </header>
 
@@ -285,19 +283,51 @@ function App() {
       {showToolsPanel && (
         <div className="tools-panel animate-fade-in">
           <div className="tools-panel-header">
-            <h3><Wrench size={18} /> MCP Tools</h3>
+            <h3><Wrench size={18} /> MCP Tools ({allTools.length})</h3>
             <button onClick={() => setShowToolsPanel(false)}><X size={18} /></button>
           </div>
           
-          {session ? (
-            <div className="connected-tools">
-              <div className="connected-header">
-                <span className="status-dot connected"></span>
-                Connected to MCP Server
+          {/* Connected Servers */}
+          <div className="presets-section">
+            <h4>Servers</h4>
+            {presets.map(preset => (
+              <div key={preset.id} className={`preset-item ${preset.status}`}>
+                <div className="preset-info">
+                  <span className="preset-name">
+                    <span className={`status-dot ${preset.status}`}></span>
+                    {preset.name}
+                  </span>
+                  <span className="preset-desc">{preset.description}</span>
+                </div>
+                {preset.status === 'connected' ? (
+                  <button 
+                    className="disconnect-small-btn"
+                    onClick={() => preset.sessionId && handleDisconnect(preset.id, preset.sessionId)}
+                    title="Disconnect"
+                  >
+                    <X size={14} />
+                  </button>
+                ) : (
+                  <button 
+                    className="connect-small-btn"
+                    onClick={() => handleConnectPreset(preset)}
+                    disabled={isConnecting}
+                    title="Connect"
+                  >
+                    {isConnecting ? <Loader2 size={14} className="spin" /> : <Plus size={14} />}
+                  </button>
+                )}
               </div>
+            ))}
+          </div>
+
+          {/* All Available Tools */}
+          {hasTools && (
+            <div className="connected-tools">
+              <h4>Available Tools</h4>
               <div className="tools-list">
-                {session.tools.map(tool => (
-                  <div key={tool.name} className="tool-item">
+                {allTools.map(tool => (
+                  <div key={`${tool.source.sessionId}-${tool.name}`} className="tool-item">
                     <Zap size={14} />
                     <span className="tool-name">{tool.name}</span>
                     <span className="tool-desc">{tool.description}</span>
@@ -305,54 +335,27 @@ function App() {
                 ))}
               </div>
             </div>
-          ) : (
-            <>
-              <p className="tools-panel-desc">Connect to an MCP server to unlock tools like weather, calculations, and more.</p>
-              
-              {presets.length > 0 && (
-                <div className="presets-section">
-                  <h4>Quick Connect</h4>
-                  {presets.map(preset => (
-                    <button
-                      key={preset.id}
-                      className={`preset-btn ${preset.status}`}
-                      onClick={() => handleConnectPreset(preset)}
-                      disabled={isConnecting}
-                    >
-                      <div className="preset-info">
-                        <span className="preset-name">{preset.name}</span>
-                        <span className="preset-desc">{preset.description}</span>
-                      </div>
-                      {isConnecting ? (
-                        <Loader2 size={16} className="spin" />
-                      ) : (
-                        <Plug size={16} />
-                      )}
-                    </button>
-                  ))}
-                </div>
-              )}
-              
-              <div className="custom-connect">
-                <h4>Custom Server</h4>
-                <div className="custom-connect-form">
-                  <input
-                    type="url"
-                    value={serverUrl}
-                    onChange={(e) => setServerUrl(e.target.value)}
-                    placeholder="http://localhost:8080/sse"
-                    disabled={isConnecting}
-                  />
-                  <button 
-                    onClick={handleConnectCustom}
-                    disabled={isConnecting || !serverUrl.trim()}
-                  >
-                    {isConnecting ? <Loader2 size={16} className="spin" /> : <Plus size={16} />}
-                  </button>
-                </div>
-              </div>
-            </>
           )}
+          
+          {/* Custom Connect */}
+          <div className="custom-connect">
+            <h4>Custom Server</h4>
+            <div className="custom-connect-form">
+              <input
+                type="url"
+                value={serverUrl}
+                onChange={(e) => setServerUrl(e.target.value)}
+                placeholder="http://localhost:8080/sse"
+                disabled={isConnecting}
+              />
+              <button 
+                onClick={handleConnectCustom}
+                disabled={isConnecting || !serverUrl.trim()}
+              >
+                {isConnecting ? <Loader2 size={16} className="spin" /> : <Plus size={16} />}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -390,7 +393,7 @@ function App() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-            placeholder={session ? "Ask me anything or use my tools..." : "Ask me anything..."}
+            placeholder={hasTools ? "Ask me anything or use my tools..." : "Ask me anything..."}
             disabled={isProcessing}
           />
           <button 

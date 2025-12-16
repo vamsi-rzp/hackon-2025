@@ -259,6 +259,92 @@
   color: var(--text-muted);
 }
 
+/* Preset Item (used for showing servers in tools panel) */
+.preset-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+}
+
+.preset-item.connected {
+  border-color: #16a34a;
+  background: #f0fdf4;
+}
+
+.preset-item.disconnected {
+  opacity: 0.7;
+}
+
+.preset-item .preset-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.preset-item .status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.preset-item .status-dot.connected {
+  background: #16a34a;
+}
+
+.preset-item .status-dot.disconnected {
+  background: #9ca3af;
+}
+
+.disconnect-small-btn,
+.connect-small-btn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.disconnect-small-btn {
+  background: #fef2f2;
+  color: #dc2626;
+}
+
+.disconnect-small-btn:hover {
+  background: #fee2e2;
+}
+
+.connect-small-btn {
+  background: #f0fdf4;
+  color: #16a34a;
+}
+
+.connect-small-btn:hover:not(:disabled) {
+  background: #dcfce7;
+}
+
+.connect-small-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.connected-tools h4 {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 12px;
+}
+
 .custom-connect {
   padding: 16px;
 }

@@ -176,6 +176,155 @@ export async function chat(
 }
 
 /**
+ * POST /api/chat/aggregated
+ * 
+ * LLM chat with tools aggregated from ALL connected MCP sessions.
+ * Automatically routes tool calls to the correct session.
+ */
+export async function chatAggregated(
+  req: Request<object, ChatResponseBody | ErrorResponse, ChatRequest>,
+  res: Response<ChatResponseBody | ErrorResponse>,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const { message, history = [], systemPrompt } = req.body;
+
+    if (!message || typeof message !== "string") {
+      sendError(res, "message is required and must be a string", "INVALID_REQUEST", 400);
+      return;
+    }
+
+    // Get ALL tools from ALL connected sessions
+    const allTools = mcpClientManager.getAllTools();
+    
+    // Strip session metadata for LLM (it doesn't need to know)
+    const toolsForLlm = allTools.map(({ _sessionId, _serverUrl, ...tool }) => tool);
+
+    console.log(`[ChatController] Aggregated chat with ${toolsForLlm.length} tools from ${mcpClientManager.getSessionCount()} sessions`);
+
+    // Call LLM with all tools
+    const llmResponse = await bedrockService.chat(
+      message, 
+      history as ChatMessage[], 
+      toolsForLlm.length > 0 ? toolsForLlm : undefined, 
+      systemPrompt
+    );
+
+    const toolsUsed: ChatResponseBody["toolsUsed"] = [];
+
+    // If LLM wants to use tools, execute them (routing to correct session)
+    if (llmResponse.toolCalls && llmResponse.toolCalls.length > 0) {
+      console.log(`[ChatController] LLM requested ${llmResponse.toolCalls.length} tool call(s)`);
+
+      const toolResults: ToolResult[] = [];
+
+      for (const toolCall of llmResponse.toolCalls) {
+        console.log(`[ChatController] Executing tool: ${toolCall.toolName}`);
+        const startTime = Date.now();
+
+        try {
+          // Use the cross-session tool call method
+          const result = await mcpClientManager.callToolAcrossSessions(
+            toolCall.toolName,
+            toolCall.arguments
+          );
+
+          const executionTime = Date.now() - startTime;
+
+          toolResults.push({
+            toolUseId: toolCall.toolUseId,
+            result: result.content,
+            isError: false,
+          });
+
+          toolsUsed.push({
+            name: toolCall.toolName,
+            arguments: toolCall.arguments,
+            result: result.content,
+            executionTime,
+          });
+
+          console.log(`[ChatController] Tool ${toolCall.toolName} executed in ${executionTime}ms`);
+        } catch (error) {
+          console.error(`[ChatController] Tool ${toolCall.toolName} failed:`, error);
+
+          toolResults.push({
+            toolUseId: toolCall.toolUseId,
+            result: error instanceof Error ? error.message : "Tool execution failed",
+            isError: true,
+          });
+
+          toolsUsed.push({
+            name: toolCall.toolName,
+            arguments: toolCall.arguments,
+            result: { error: error instanceof Error ? error.message : "Unknown error" },
+            executionTime: Date.now() - startTime,
+          });
+        }
+      }
+
+      // Continue conversation with tool results
+      const finalResponse = await bedrockService.continueWithToolResults(
+        history as ChatMessage[],
+        message,
+        llmResponse.toolCalls,
+        toolResults,
+        toolsForLlm,
+        systemPrompt
+      );
+
+      res.json({
+        reply: finalResponse.message,
+        toolsUsed: toolsUsed.length > 0 ? toolsUsed : undefined,
+        usage: finalResponse.usage,
+      });
+    } else {
+      // No tool calls, return LLM response directly
+      res.json({
+        reply: llmResponse.message,
+        usage: llmResponse.usage,
+      });
+    }
+  } catch (error) {
+    if (error instanceof McpError) {
+      sendError(res, error.message, error.code, error.statusCode);
+      return;
+    }
+
+    console.error("[ChatController] Aggregated chat error:", error);
+
+    if (error instanceof Error && error.message.includes("Bedrock")) {
+      sendError(res, error.message, "BEDROCK_ERROR", 503);
+      return;
+    }
+
+    next(error);
+  }
+}
+
+/**
+ * GET /api/tools
+ * 
+ * Get all tools from all connected sessions (aggregated)
+ */
+export function getAllTools(
+  _req: Request,
+  res: Response,
+  _next: NextFunction
+): void {
+  const allTools = mcpClientManager.getAllTools();
+  
+  res.json({
+    tools: allTools.map(({ _sessionId, _serverUrl, ...tool }) => ({
+      ...tool,
+      source: { sessionId: _sessionId, serverUrl: _serverUrl },
+    })),
+    count: allTools.length,
+    sessionCount: mcpClientManager.getSessionCount(),
+  });
+}
+
+/**
  * POST /api/session/:sessionId/chat/stream
  * 
  * Streaming version of chat (placeholder for future implementation)

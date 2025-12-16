@@ -424,6 +424,64 @@ export class McpClientManager {
   }
 
   /**
+   * Get all tools from all connected sessions (aggregated)
+   * Each tool includes metadata about which session it belongs to
+   */
+  getAllTools(): Array<Tool & { _sessionId: string; _serverUrl: string }> {
+    const allTools: Array<Tool & { _sessionId: string; _serverUrl: string }> = [];
+    
+    for (const session of this.sessions.values()) {
+      if (session.status === "connected") {
+        for (const tool of session.tools) {
+          allTools.push({
+            ...tool,
+            _sessionId: session.sessionId,
+            _serverUrl: session.serverUrl,
+          });
+        }
+      }
+    }
+    
+    return allTools;
+  }
+
+  /**
+   * Find which session has a specific tool
+   */
+  findSessionForTool(toolName: string): string | null {
+    for (const session of this.sessions.values()) {
+      if (session.status === "connected") {
+        const hasTool = session.tools.some(t => t.name === toolName);
+        if (hasTool) {
+          return session.sessionId;
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Call a tool by name, automatically routing to the correct session
+   */
+  async callToolAcrossSessions(
+    toolName: string,
+    args: Record<string, unknown>
+  ): Promise<ToolResult> {
+    const sessionId = this.findSessionForTool(toolName);
+    
+    if (!sessionId) {
+      const allTools = this.getAllTools();
+      throw new McpError(
+        `Tool '${toolName}' not found in any connected session. Available tools: ${allTools.map(t => t.name).join(", ")}`,
+        "TOOL_NOT_FOUND",
+        404
+      );
+    }
+
+    return this.callTool(sessionId, toolName, args);
+  }
+
+  /**
    * Disconnect all sessions (for graceful shutdown)
    */
   async disconnectAll(): Promise<void> {

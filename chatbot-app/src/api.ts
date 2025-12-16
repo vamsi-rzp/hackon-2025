@@ -54,6 +54,13 @@ export interface ConnectPresetResponse {
   connectedAt: string;
 }
 
+export interface AggregatedTool extends Tool {
+  source: {
+    sessionId: string;
+    serverUrl: string;
+  };
+}
+
 export const api = {
   // Standalone chat - no MCP session required
   async chatStandalone(message: string, history: ChatMessage[] = []): Promise<ChatResponse> {
@@ -66,6 +73,27 @@ export const api = {
       const error = await res.json();
       throw new Error(error.error || 'Chat failed');
     }
+    return res.json();
+  },
+
+  // Aggregated chat - uses tools from ALL connected sessions
+  async chatAggregated(message: string, history: ChatMessage[] = []): Promise<ChatResponse> {
+    const res = await fetch(`${API_BASE}/chat/aggregated`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message, history }),
+    });
+    if (!res.ok) {
+      const error = await res.json();
+      throw new Error(error.error || 'Aggregated chat failed');
+    }
+    return res.json();
+  },
+
+  // Get ALL tools from ALL connected sessions
+  async getAllTools(): Promise<{ tools: AggregatedTool[]; count: number; sessionCount: number }> {
+    const res = await fetch(`${API_BASE}/tools`);
+    if (!res.ok) throw new Error('Failed to fetch all tools');
     return res.json();
   },
 
