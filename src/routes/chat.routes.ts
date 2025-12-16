@@ -1,16 +1,19 @@
 import { Router } from "express";
-import { chat, chatStream } from "../controllers/chatController.js";
+import { chat, chatStream, chatStandalone } from "../controllers/chatController.js";
 
 const router = Router();
 
 /**
  * LLM Chat Routes
  * 
- * These routes handle LLM-powered chat with tool calling.
+ * These routes handle LLM-powered chat.
  * Requires AWS Bedrock credentials to be configured.
  */
 
-// Chat with LLM (with tool calling support)
+// Standalone chat - no MCP session required
+router.post("/chat", chatStandalone);
+
+// Chat with LLM + MCP tools (session required)
 router.post("/session/:sessionId/chat", chat);
 
 // Streaming chat (placeholder for future implementation)

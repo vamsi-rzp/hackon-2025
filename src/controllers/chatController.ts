@@ -5,6 +5,51 @@ import type { ErrorResponse, ChatRequest, ChatResponseBody, ChatMessage } from "
 import { sendError } from "../utils/index.js";
 
 /**
+ * POST /api/chat
+ * 
+ * Standalone LLM chat endpoint - no MCP session required.
+ * Pure conversation with the LLM without tool calling.
+ */
+export async function chatStandalone(
+  req: Request<object, ChatResponseBody | ErrorResponse, ChatRequest>,
+  res: Response<ChatResponseBody | ErrorResponse>,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const { message, history = [], systemPrompt } = req.body;
+
+    if (!message || typeof message !== "string") {
+      sendError(res, "message is required and must be a string", "INVALID_REQUEST", 400);
+      return;
+    }
+
+    console.log(`[ChatController] Standalone chat request: "${message.slice(0, 50)}..."`);
+
+    // Call LLM without tools
+    const llmResponse = await bedrockService.chat(
+      message, 
+      history as ChatMessage[], 
+      undefined, // No tools
+      systemPrompt || "You are a helpful AI assistant. Be concise and friendly in your responses."
+    );
+
+    res.json({
+      reply: llmResponse.message,
+      usage: llmResponse.usage,
+    });
+  } catch (error) {
+    console.error("[ChatController] Standalone chat error:", error);
+
+    if (error instanceof Error && error.message.includes("Bedrock")) {
+      sendError(res, error.message, "BEDROCK_ERROR", 503);
+      return;
+    }
+
+    next(error);
+  }
+}
+
+/**
  * POST /api/session/:sessionId/chat
  * 
  * LLM-powered chat endpoint that intelligently uses MCP tools
