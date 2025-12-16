@@ -1,8 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Bot, Send, Loader2, Plug, Sparkles, X, Zap, Brain, Wrench, Plus } from 'lucide-react';
-import type { Message, Session, Tool } from './types';
+import { Bot, Send, Loader2, Plug, Sparkles, X, Zap, Wrench, Plus } from 'lucide-react';
+import type { Message, Session } from './types';
 import { api, type ChatMessage as ApiChatMessage, type PresetInfo } from './api';
-import { matchTool, generateBotResponse } from './toolMatcher';
 import './App.css';
 
 const BOT_NAME = 'Atlas';
@@ -20,20 +19,52 @@ function App() {
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const initializedRef = useRef(false);
 
-  // Fetch presets on mount
+  // Fetch presets and auto-connect to already connected ones
   useEffect(() => {
-    api.getPresets()
-      .then(res => setPresets(res.presets))
-      .catch(err => console.error('Failed to fetch presets:', err));
-  }, []);
+    if (initializedRef.current) return;
+    initializedRef.current = true;
 
-  // Show welcome message on mount
-  useEffect(() => {
-    addMessage({
-      role: 'bot',
-      content: `Hi! I'm **${BOT_NAME}**, your AI assistant. 🤖\n\nI'm powered by **AWS Bedrock** and ready to chat!\n\n💡 **Tip**: Click the **🔧 Tools** button to connect MCP servers and unlock additional capabilities like weather, calculations, and more.`,
-    });
+    const initializeApp = async () => {
+      try {
+        const res = await api.getPresets();
+        setPresets(res.presets);
+
+        // Find any preset that's already connected
+        const connectedPreset = res.presets.find(p => p.status === 'connected' && p.sessionId);
+        
+        if (connectedPreset && connectedPreset.sessionId) {
+          // Auto-use the already connected preset
+          const toolsRes = await api.getTools(connectedPreset.sessionId);
+          setSession({
+            sessionId: connectedPreset.sessionId,
+            serverUrl: connectedPreset.url,
+            tools: toolsRes.tools,
+            connectedAt: new Date(),
+          });
+
+          addMessage({
+            role: 'bot',
+            content: `Hi! I'm **${BOT_NAME}**, your AI assistant. 🤖\n\nI'm powered by **AWS Bedrock** and connected to **${connectedPreset.name}** with **${toolsRes.tools.length} tools**!\n\nAvailable tools: ${toolsRes.tools.map(t => `**${t.name}**`).join(', ')}\n\nJust ask me anything naturally!`,
+          });
+        } else {
+          // No connected preset, show regular welcome
+          addMessage({
+            role: 'bot',
+            content: `Hi! I'm **${BOT_NAME}**, your AI assistant. 🤖\n\nI'm powered by **AWS Bedrock** and ready to chat!\n\n💡 **Tip**: Click the **🔧 Tools** button to connect MCP servers and unlock additional capabilities like weather, calculations, and more.`,
+          });
+        }
+      } catch (err) {
+        console.error('Failed to initialize:', err);
+        addMessage({
+          role: 'bot',
+          content: `Hi! I'm **${BOT_NAME}**, your AI assistant. 🤖\n\nI'm powered by **AWS Bedrock** and ready to chat!`,
+        });
+      }
+    };
+
+    initializeApp();
   }, []);
 
   const scrollToBottom = () => {
