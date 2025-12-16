@@ -1,5 +1,8 @@
+import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import express, { type Request, type Response } from "express";
 import { z } from "zod";
 
@@ -7,9 +10,10 @@ const PORT = parseInt(process.env.PORT ?? "8080", 10);
 
 // Create Express app
 const app = express();
+app.use(express.json());
 
 // Store active transports by their session ID
-const transports = new Map<string, SSEServerTransport>();
+const transports = new Map<string, StreamableHTTPServerTransport | SSEServerTransport>();
 
 // ============================================
 // CREATE SERVER WITH TOOLS
@@ -192,10 +196,78 @@ function createMcpServer(): McpServer {
 }
 
 // ============================================
-// SSE ENDPOINT
+// STREAMABLE HTTP TRANSPORT (NEW - Protocol 2025-03-26)
+// Single endpoint for all MCP operations
+// ============================================
+app.all("/mcp", async (req: Request, res: Response) => {
+  console.log(`[MCP] ${req.method} request`);
+  
+  try {
+    // Check for existing session
+    const sessionId = req.headers["mcp-session-id"] as string | undefined;
+    let transport: StreamableHTTPServerTransport;
+
+    if (sessionId && transports.has(sessionId)) {
+      const existing = transports.get(sessionId);
+      if (existing instanceof StreamableHTTPServerTransport) {
+        transport = existing;
+      } else {
+        res.status(400).json({
+          jsonrpc: "2.0",
+          error: { code: -32000, message: "Session uses different transport protocol" },
+          id: null,
+        });
+        return;
+      }
+    } else if (!sessionId && req.method === "POST" && isInitializeRequest(req.body)) {
+      // New session - create transport
+      transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: (sid) => {
+          console.log(`[MCP] Session initialized: ${sid.slice(0, 8)}...`);
+          transports.set(sid, transport);
+        },
+      });
+
+      transport.onclose = () => {
+        const sid = transport.sessionId;
+        if (sid) {
+          console.log(`[MCP] Session closed: ${sid.slice(0, 8)}...`);
+          transports.delete(sid);
+        }
+      };
+
+      // Connect server to transport
+      const server = createMcpServer();
+      await server.connect(transport);
+    } else {
+      res.status(400).json({
+        jsonrpc: "2.0",
+        error: { code: -32000, message: "Invalid request: No valid session ID" },
+        id: null,
+      });
+      return;
+    }
+
+    await transport.handleRequest(req, res, req.body);
+  } catch (error) {
+    console.error("[MCP] Error:", error);
+    if (!res.headersSent) {
+      res.status(500).json({
+        jsonrpc: "2.0",
+        error: { code: -32603, message: "Internal server error" },
+        id: null,
+      });
+    }
+  }
+});
+
+// ============================================
+// SSE TRANSPORT (LEGACY - Protocol 2024-11-05)
+// Deprecated but maintained for backward compatibility
 // ============================================
 app.get("/sse", async (_req: Request, res: Response) => {
-  console.log("[SSE] New connection request");
+  console.log("[SSE] New connection (legacy transport)");
   
   const server = createMcpServer();
   const transport = new SSEServerTransport("/messages", res);
@@ -214,7 +286,6 @@ app.get("/sse", async (_req: Request, res: Response) => {
   await server.connect(transport);
 });
 
-// Handle POST messages
 app.post("/messages", async (req: Request, res: Response) => {
   const sessionId = req.query.sessionId as string;
   
@@ -224,28 +295,64 @@ app.post("/messages", async (req: Request, res: Response) => {
   }
   
   const transport = transports.get(sessionId);
-  if (!transport) {
-    res.status(404).json({ error: "Session not found" });
+  if (!transport || !(transport instanceof SSEServerTransport)) {
+    res.status(404).json({ error: "Session not found or wrong transport type" });
     return;
   }
 
-  await transport.handlePostMessage(req, res);
+  await transport.handlePostMessage(req, res, req.body);
 });
 
-// Info & health endpoints
-app.get("/health", (_req, res) => res.json({ status: "healthy", sessions: transports.size }));
+// ============================================
+// INFO & HEALTH ENDPOINTS
+// ============================================
+app.get("/health", (_req, res) => res.json({ 
+  status: "healthy", 
+  sessions: transports.size,
+  transports: {
+    streamableHttp: "/mcp",
+    sse: "/sse (legacy)",
+  }
+}));
+
 app.get("/", (_req, res) => res.json({
   name: "Sample MCP Server",
-  sseEndpoint: "/sse",
+  version: "1.0.0",
+  endpoints: {
+    streamableHttp: "/mcp (recommended)",
+    sse: "/sse (legacy)",
+  },
   tools: ["echo", "calculator", "get_weather", "random_number", "get_time", "text_transform", "generate_uuid", "greet"],
 }));
 
-app.listen(PORT, () => {
+// ============================================
+// SERVER LIFECYCLE
+// ============================================
+const server = app.listen(PORT, () => {
   console.log(`
 ╔════════════════════════════════════════════════════════════╗
-║              Sample MCP Server                             ║
-║  SSE Endpoint: http://localhost:${PORT}/sse                    ║
+║              Sample MCP Server v1.0.0                      ║
+╠════════════════════════════════════════════════════════════╣
+║  Streamable HTTP: http://localhost:${PORT}/mcp (recommended)   ║
+║  SSE (legacy):    http://localhost:${PORT}/sse                 ║
+╠════════════════════════════════════════════════════════════╣
 ║  Tools: echo, calculator, get_weather, random_number,      ║
 ║         get_time, text_transform, generate_uuid, greet     ║
 ╚════════════════════════════════════════════════════════════╝`);
+});
+
+// Graceful shutdown
+process.on("SIGINT", async () => {
+  console.log("\n[Shutdown] Closing all transports...");
+  for (const [sessionId, transport] of transports) {
+    try {
+      await transport.close();
+      console.log(`[Shutdown] Closed session ${sessionId.slice(0, 8)}...`);
+    } catch (e) {
+      console.error(`[Shutdown] Error closing ${sessionId}:`, e);
+    }
+  }
+  transports.clear();
+  server.close();
+  process.exit(0);
 });
