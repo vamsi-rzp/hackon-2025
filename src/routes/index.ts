@@ -1,35 +1,20 @@
 import { Router } from "express";
-import {
-  connectToServer,
-  getTools,
-  refreshTools,
-  executeTool,
-  disconnectSession,
-  getSession,
-  listSessions,
-  healthCheck,
-} from "../controllers/sessionController.js";
-import { chat, chatStream } from "../controllers/chatController.js";
+import sessionRoutes from "./session.routes.js";
+import chatRoutes from "./chat.routes.js";
+import presetRoutes from "./preset.routes.js";
 
 const router = Router();
 
-// Health check
-router.get("/health", healthCheck);
+/**
+ * Main API Router
+ * 
+ * Combines all route modules into a single router.
+ * Each module handles a specific domain of the API.
+ */
 
-// Session management
-router.get("/sessions", listSessions);
-router.post("/connect", connectToServer);
-
-// Session-specific endpoints
-router.get("/session/:sessionId", getSession);
-router.get("/session/:sessionId/tools", getTools);
-router.post("/session/:sessionId/tools/refresh", refreshTools);
-router.post("/session/:sessionId/execute", executeTool);
-router.delete("/session/:sessionId", disconnectSession);
-
-// LLM-powered chat endpoints (requires AWS Bedrock)
-router.post("/session/:sessionId/chat", chat);
-router.post("/session/:sessionId/chat/stream", chatStream);
+// Mount route modules
+router.use(sessionRoutes);
+router.use(chatRoutes);
+router.use(presetRoutes);
 
 export default router;
-

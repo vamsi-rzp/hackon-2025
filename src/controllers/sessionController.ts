@@ -9,25 +9,9 @@ import type {
   DisconnectResponse,
   ErrorResponse,
   SessionInfo,
+  HealthResponse,
 } from "../types/index.js";
-
-/**
- * Helper to send error responses
- */
-function sendError(
-  res: Response,
-  message: string,
-  code: string,
-  statusCode: number = 500,
-  details?: unknown
-): void {
-  const errorResponse: ErrorResponse = {
-    error: message,
-    code,
-    details,
-  };
-  res.status(statusCode).json(errorResponse);
-}
+import { sendError } from "../utils/index.js";
 
 /**
  * POST /api/connect
@@ -89,13 +73,11 @@ export function getTools(
 
     const tools = mcpClientManager.getTools(sessionId);
 
-    const response: ToolsListResponse = {
+    res.json({
       sessionId,
       tools,
       count: tools.length,
-    };
-
-    res.json(response);
+    });
   } catch (error) {
     if (error instanceof McpError) {
       sendError(res, error.message, error.code, error.statusCode, error.details);
@@ -126,13 +108,11 @@ export async function refreshTools(
 
     const tools = await mcpClientManager.refreshTools(sessionId);
 
-    const response: ToolsListResponse = {
+    res.json({
       sessionId,
       tools,
       count: tools.length,
-    };
-
-    res.json(response);
+    });
   } catch (error) {
     if (error instanceof McpError) {
       sendError(res, error.message, error.code, error.statusCode, error.details);
@@ -182,15 +162,14 @@ export async function executeTool(
     const result = await mcpClientManager.callTool(sessionId, toolName, args);
     const executionTime = Date.now() - startTime;
 
-    const response: ExecuteToolResponse = {
+    console.log(`[SessionController] Tool '${toolName}' executed in ${executionTime}ms`);
+
+    res.json({
       success: true,
       result: result.content,
       toolName,
       executionTime,
-    };
-
-    console.log(`[SessionController] Tool '${toolName}' executed in ${executionTime}ms`);
-    res.json(response);
+    });
   } catch (error) {
     if (error instanceof McpError) {
       sendError(res, error.message, error.code, error.statusCode, error.details);
@@ -221,14 +200,13 @@ export async function disconnectSession(
 
     await mcpClientManager.disconnect(sessionId);
 
-    const response: DisconnectResponse = {
+    console.log(`[SessionController] Session ${sessionId} disconnected`);
+
+    res.json({
       success: true,
       sessionId,
       message: "Session disconnected successfully",
-    };
-
-    console.log(`[SessionController] Session ${sessionId} disconnected`);
-    res.json(response);
+    });
   } catch (error) {
     if (error instanceof McpError) {
       sendError(res, error.message, error.code, error.statusCode, error.details);
@@ -264,15 +242,13 @@ export function getSession(
       return;
     }
 
-    const response: SessionInfo = {
+    res.json({
       sessionId: session.sessionId,
       serverUrl: session.serverUrl,
       toolCount: session.tools.length,
       status: session.status,
       createdAt: session.createdAt.toISOString(),
-    };
-
-    res.json(response);
+    });
   } catch (error) {
     if (error instanceof McpError) {
       sendError(res, error.message, error.code, error.statusCode, error.details);
@@ -288,14 +264,13 @@ export function getSession(
  */
 export function listSessions(
   _req: Request,
-  res: Response<{ sessions: SessionInfo[]; count: number }>,
-  _next: NextFunction
+  res: Response<{ sessions: SessionInfo[]; count: number }>
 ): void {
   console.log("[SessionController] List all sessions request");
 
   const sessions = mcpClientManager.getAllSessions();
 
-  const response = {
+  res.json({
     sessions: sessions.map(session => ({
       sessionId: session.sessionId,
       serverUrl: session.serverUrl,
@@ -304,9 +279,7 @@ export function listSessions(
       createdAt: session.createdAt.toISOString(),
     })),
     count: sessions.length,
-  };
-
-  res.json(response);
+  });
 }
 
 /**
@@ -315,8 +288,7 @@ export function listSessions(
  */
 export function healthCheck(
   _req: Request,
-  res: Response<{ status: string; timestamp: string; activeSessions: number }>,
-  _next: NextFunction
+  res: Response<HealthResponse>
 ): void {
   res.json({
     status: "healthy",
@@ -324,4 +296,3 @@ export function healthCheck(
     activeSessions: mcpClientManager.getSessionCount(),
   });
 }
-

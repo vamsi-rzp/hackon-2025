@@ -1,46 +1,8 @@
 import type { Request, Response, NextFunction } from "express";
 import { mcpClientManager, McpError } from "../services/McpClientManager.js";
-import { bedrockService, type ChatMessage, type ToolCall, type ToolResult } from "../services/BedrockService.js";
-import type { ErrorResponse } from "../types/index.js";
-
-/**
- * Request body for chat endpoint
- */
-interface ChatRequest {
-  message: string;
-  history?: ChatMessage[];
-  systemPrompt?: string;
-}
-
-/**
- * Response from chat endpoint
- */
-interface ChatResponseBody {
-  reply: string;
-  toolsUsed?: Array<{
-    name: string;
-    arguments: Record<string, unknown>;
-    result: unknown;
-    executionTime: number;
-  }>;
-  usage?: {
-    inputTokens: number;
-    outputTokens: number;
-  };
-}
-
-/**
- * Helper to send error responses
- */
-function sendError(
-  res: Response,
-  message: string,
-  code: string,
-  statusCode: number = 500
-): void {
-  const errorResponse: ErrorResponse = { error: message, code };
-  res.status(statusCode).json(errorResponse);
-}
+import { bedrockService, type ToolCall, type ToolResult } from "../services/BedrockService.js";
+import type { ErrorResponse, ChatRequest, ChatResponseBody, ChatMessage } from "../types/index.js";
+import { sendError } from "../utils/index.js";
 
 /**
  * POST /api/session/:sessionId/chat
@@ -74,7 +36,7 @@ export async function chat(
     const tools = mcpClientManager.getTools(sessionId);
 
     // Call LLM with tools
-    const llmResponse = await bedrockService.chat(message, history, tools, systemPrompt);
+    const llmResponse = await bedrockService.chat(message, history as ChatMessage[], tools, systemPrompt);
 
     const toolsUsed: ChatResponseBody["toolsUsed"] = [];
 
@@ -131,7 +93,7 @@ export async function chat(
 
       // Continue conversation with tool results
       const finalResponse = await bedrockService.continueWithToolResults(
-        history,
+        history as ChatMessage[],
         message,
         llmResponse.toolCalls,
         toolResults,
@@ -139,23 +101,17 @@ export async function chat(
         systemPrompt
       );
 
-      // Check if LLM wants to call more tools (recursive tool calling)
-      // For simplicity, we'll limit to one round of tool calls
-      const response: ChatResponseBody = {
+      res.json({
         reply: finalResponse.message,
         toolsUsed: toolsUsed.length > 0 ? toolsUsed : undefined,
         usage: finalResponse.usage,
-      };
-
-      res.json(response);
+      });
     } else {
       // No tool calls, return LLM response directly
-      const response: ChatResponseBody = {
+      res.json({
         reply: llmResponse.message,
         usage: llmResponse.usage,
-      };
-
-      res.json(response);
+      });
     }
   } catch (error) {
     if (error instanceof McpError) {
@@ -180,7 +136,7 @@ export async function chat(
  * Streaming version of chat (placeholder for future implementation)
  */
 export async function chatStream(
-  req: Request<{ sessionId: string }>,
+  _req: Request<{ sessionId: string }>,
   res: Response,
   _next: NextFunction
 ): Promise<void> {
@@ -189,4 +145,3 @@ export async function chatStream(
     code: "NOT_IMPLEMENTED",
   });
 }
-

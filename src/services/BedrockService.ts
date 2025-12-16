@@ -9,11 +9,7 @@ import {
   type ConversationRole,
 } from "@aws-sdk/client-bedrock-runtime";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-
-// Configuration
-const DEFAULT_MODEL_ID = process.env.BEDROCK_MODEL_ID || "anthropic.claude-3-sonnet-20240229-v1:0";
-const AWS_REGION = process.env.AWS_REGION || "us-east-1";
-const MAX_TOKENS = parseInt(process.env.BEDROCK_MAX_TOKENS || "2048", 10);
+import { config } from "../config/index.js";
 
 export interface ChatMessage {
   role: "user" | "assistant";
@@ -52,9 +48,9 @@ export class BedrockService {
   private modelId: string;
 
   constructor(modelId?: string, region?: string) {
-    this.modelId = modelId || DEFAULT_MODEL_ID;
+    this.modelId = modelId || config.bedrock.modelId;
     this.client = new BedrockRuntimeClient({
-      region: region || AWS_REGION,
+      region: region || config.bedrock.region,
     });
     
     console.log(`[BedrockService] Initialized with model: ${this.modelId}`);
@@ -131,7 +127,7 @@ If the user's request doesn't match any available tool, respond helpfully with w
         system,
         toolConfig,
         inferenceConfig: {
-          maxTokens: MAX_TOKENS,
+          maxTokens: config.bedrock.maxTokens,
           temperature: 0.7,
         },
       });
@@ -239,7 +235,7 @@ Summarize the results naturally for the user. Be concise and friendly.`,
         system,
         toolConfig,
         inferenceConfig: {
-          maxTokens: MAX_TOKENS,
+          maxTokens: config.bedrock.maxTokens,
           temperature: 0.7,
         },
       });
