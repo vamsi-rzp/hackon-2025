@@ -1,6 +1,7 @@
 import { Router } from "express";
 import {
   connectToServer,
+  connectStdio,
   getTools,
   refreshTools,
   executeTool,
@@ -23,7 +24,8 @@ router.get("/health", healthCheck);
 
 // Session listing and creation
 router.get("/sessions", listSessions);
-router.post("/connect", connectToServer);
+router.post("/connect", connectToServer);       // SSE transport
+router.post("/connect/stdio", connectStdio);    // Stdio transport
 
 // Session-specific operations
 router.get("/session/:sessionId", getSession);

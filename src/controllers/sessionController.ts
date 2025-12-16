@@ -10,12 +10,13 @@ import type {
   ErrorResponse,
   SessionInfo,
   HealthResponse,
+  ConnectStdioRequest,
 } from "../types/index.js";
 import { sendError } from "../utils/index.js";
 
 /**
  * POST /api/connect
- * Create a new session and connect to an MCP server
+ * Create a new session and connect to an MCP server via SSE
  */
 export async function connectToServer(
   req: Request<object, ConnectResponse | ErrorResponse, ConnectRequest>,
@@ -30,9 +31,9 @@ export async function connectToServer(
       return;
     }
 
-    console.log(`[SessionController] Connection request received for: ${serverUrl}`);
+    console.log(`[SessionController] SSE connection request for: ${serverUrl}`);
 
-    const { sessionId, tools } = await mcpClientManager.connect(serverUrl);
+    const { sessionId, tools } = await mcpClientManager.connectSse(serverUrl);
 
     const response: ConnectResponse = {
       sessionId,
@@ -42,6 +43,57 @@ export async function connectToServer(
     };
 
     console.log(`[SessionController] Session ${sessionId} created successfully`);
+    res.status(201).json(response);
+  } catch (error) {
+    if (error instanceof McpError) {
+      sendError(res, error.message, error.code, error.statusCode, error.details);
+      return;
+    }
+    next(error);
+  }
+}
+
+/**
+ * POST /api/connect/stdio
+ * Create a new session and connect to an MCP server via stdio (spawns a process)
+ */
+export async function connectStdio(
+  req: Request<object, ConnectResponse | ErrorResponse, ConnectStdioRequest>,
+  res: Response<ConnectResponse | ErrorResponse>,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const { command, args, env, cwd } = req.body;
+
+    if (!command || typeof command !== "string") {
+      sendError(res, "command is required and must be a string", "INVALID_REQUEST", 400);
+      return;
+    }
+
+    if (args !== undefined && !Array.isArray(args)) {
+      sendError(res, "args must be an array of strings", "INVALID_REQUEST", 400);
+      return;
+    }
+
+    const description = `${command} ${(args || []).join(" ")}`;
+    console.log(`[SessionController] Stdio connection request for: ${description}`);
+
+    const { sessionId, tools } = await mcpClientManager.connectStdio({
+      type: "stdio",
+      command,
+      args,
+      env,
+      cwd,
+    });
+
+    const response: ConnectResponse = {
+      sessionId,
+      tools,
+      serverUrl: `stdio://${command}`,
+      connectedAt: new Date().toISOString(),
+    };
+
+    console.log(`[SessionController] Stdio session ${sessionId} created successfully`);
     res.status(201).json(response);
   } catch (error) {
     if (error instanceof McpError) {
@@ -245,9 +297,11 @@ export function getSession(
     res.json({
       sessionId: session.sessionId,
       serverUrl: session.serverUrl,
+      transportType: session.transportType,
       toolCount: session.tools.length,
       status: session.status,
       createdAt: session.createdAt.toISOString(),
+      pid: session.pid,
     });
   } catch (error) {
     if (error instanceof McpError) {
@@ -274,9 +328,11 @@ export function listSessions(
     sessions: sessions.map(session => ({
       sessionId: session.sessionId,
       serverUrl: session.serverUrl,
+      transportType: session.transportType,
       toolCount: session.tools.length,
       status: session.status,
       createdAt: session.createdAt.toISOString(),
+      pid: session.pid,
     })),
     count: sessions.length,
   });

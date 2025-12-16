@@ -30,4 +30,8 @@ export type {
   PresetInfo,
   ConnectPresetRequest,
   ConnectPresetResponse,
+  ConnectStdioRequest,
 } from "./preset.types.js";
+
+// Re-export session transport type
+export type { TransportType } from "./session.types.js";

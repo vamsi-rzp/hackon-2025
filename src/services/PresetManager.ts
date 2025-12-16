@@ -1,6 +1,19 @@
-import { config, type McpPreset } from "../config/index.js";
+import { config, type McpPreset, type McpTransportConfig } from "../config/index.js";
 import { mcpClientManager } from "./McpClientManager.js";
 import type { PresetInfo } from "../types/index.js";
+
+/**
+ * Helper to get a display URL for a transport config
+ */
+function getTransportUrl(transport: McpTransportConfig): string {
+  switch (transport.type) {
+    case "sse":
+    case "streamable-http":
+      return transport.url;
+    case "stdio":
+      return `stdio://${transport.command}`;
+  }
+}
 
 /**
  * PresetManager - Manages pre-configured MCP server connections
@@ -9,6 +22,7 @@ import type { PresetInfo } from "../types/index.js";
  * - Loading preset configurations
  * - Auto-connecting to presets on startup
  * - Mapping presets to sessions
+ * - Supporting both SSE and stdio transports
  */
 export class PresetManager {
   /** Map of preset ID to session ID (for connected presets) */
@@ -46,11 +60,12 @@ export class PresetManager {
       id: preset.id,
       name: preset.name,
       description: preset.description,
-      url: preset.url,
+      transport: preset.transport,
       autoConnect: preset.autoConnect,
       tags: preset.tags,
       sessionId: sessionId,
       status: session?.status ?? "disconnected",
+      toolCount: session?.tools.length ?? 0,
     };
   }
 
@@ -66,11 +81,12 @@ export class PresetManager {
         id: preset.id,
         name: preset.name,
         description: preset.description,
-        url: preset.url,
+        transport: preset.transport,
         autoConnect: preset.autoConnect,
         tags: preset.tags,
         sessionId: sessionId,
         status: session?.status ?? "disconnected",
+        toolCount: session?.tools.length ?? 0,
       };
     });
   }
@@ -96,10 +112,12 @@ export class PresetManager {
       this.presetSessions.delete(presetId);
     }
 
-    console.log(`[PresetManager] Connecting to preset '${preset.name}' (${preset.url})`);
+    const transportUrl = getTransportUrl(preset.transport);
+    console.log(`[PresetManager] Connecting to preset '${preset.name}' (${preset.transport.type}: ${transportUrl})`);
 
     try {
-      const { sessionId, tools } = await mcpClientManager.connect(preset.url);
+      // Use the new transport-aware connect method
+      const { sessionId, tools } = await mcpClientManager.connectWithConfig(preset.transport);
       this.presetSessions.set(presetId, sessionId);
       
       console.log(`[PresetManager] Preset '${preset.name}' connected with ${tools.length} tools`);
@@ -179,4 +197,3 @@ export class PresetManager {
 
 // Export singleton instance
 export const presetManager = new PresetManager();
-

@@ -1,15 +1,43 @@
 import EventSource from "eventsource";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { v4 as uuidv4 } from "uuid";
-import type { ActiveSession, SessionStatus } from "../types/index.js";
+import type { McpTransportConfig, StdioTransportConfig } from "../config/index.js";
 
 // Apply EventSource polyfill for Node.js environment
-// This is required because Node.js doesn't have native EventSource support
 if (typeof globalThis.EventSource === "undefined") {
   // @ts-expect-error - Polyfilling global EventSource
   globalThis.EventSource = EventSource;
+}
+
+/**
+ * Transport type identifier
+ */
+export type TransportType = "sse" | "stdio" | "streamable-http";
+
+/**
+ * Session status
+ */
+export type SessionStatus = "connecting" | "connected" | "disconnected" | "error";
+
+/**
+ * Active session with transport metadata
+ */
+export interface ActiveSession {
+  sessionId: string;
+  /** For SSE/HTTP: URL, For stdio: command description */
+  serverUrl: string;
+  client: Client;
+  transport: Transport;
+  transportType: TransportType;
+  tools: Tool[];
+  createdAt: Date;
+  status: SessionStatus;
+  /** For stdio: the process ID */
+  pid?: number;
 }
 
 /**
@@ -38,38 +66,52 @@ export class McpError extends Error {
 /**
  * McpClientManager - Manages MCP client connections to remote servers
  * 
- * This class is responsible for:
- * - Establishing SSE connections to MCP servers
- * - Discovering and caching available tools
- * - Executing tools on remote servers
- * - Managing session lifecycle
+ * Supports multiple transport types:
+ * - SSE (Server-Sent Events) - for remote HTTP-based servers
+ * - Stdio - for local process-based servers
+ * - Streamable HTTP - for the new MCP HTTP transport
  */
 export class McpClientManager {
   private sessions: Map<string, ActiveSession> = new Map();
 
   constructor() {
-    console.log("[McpClientManager] Initialized with EventSource polyfill");
+    console.log("[McpClientManager] Initialized with SSE and Stdio support");
   }
 
   /**
-   * Connect to a remote MCP server and create a new session
-   * 
-   * @param serverUrl - The URL of the MCP server's SSE endpoint
-   * @returns The session ID and list of available tools
+   * Connect to an MCP server using the appropriate transport
    */
-  async connect(serverUrl: string): Promise<{ sessionId: string; tools: Tool[] }> {
+  async connectWithConfig(config: McpTransportConfig): Promise<{ sessionId: string; tools: Tool[] }> {
+    switch (config.type) {
+      case "sse":
+        return this.connectSse(config.url);
+      case "stdio":
+        return this.connectStdio(config);
+      case "streamable-http":
+        // For now, fall back to SSE transport for streamable-http
+        // TODO: Implement StreamableHTTPClientTransport when available
+        return this.connectSse(config.url);
+      default:
+        throw new McpError(
+          `Unsupported transport type: ${(config as { type: string }).type}`,
+          "UNSUPPORTED_TRANSPORT",
+          400
+        );
+    }
+  }
+
+  /**
+   * Connect to a remote MCP server via SSE
+   */
+  async connectSse(serverUrl: string): Promise<{ sessionId: string; tools: Tool[] }> {
     const sessionId = uuidv4();
-    console.log(`[McpClientManager] Connecting to ${serverUrl} (Session: ${sessionId})`);
+    console.log(`[McpClientManager] Connecting via SSE to ${serverUrl} (Session: ${sessionId})`);
 
     // Validate URL
     try {
       new URL(serverUrl);
     } catch {
-      throw new McpError(
-        "Invalid server URL provided",
-        "INVALID_URL",
-        400
-      );
+      throw new McpError("Invalid server URL provided", "INVALID_URL", 400);
     }
 
     // Create the SSE transport
@@ -77,60 +119,104 @@ export class McpClientManager {
     try {
       transport = new SSEClientTransport(new URL(serverUrl));
     } catch (error) {
-      console.error(`[McpClientManager] Failed to create transport:`, error);
-      throw new McpError(
-        "Failed to create SSE transport",
-        "TRANSPORT_ERROR",
-        500,
-        error
-      );
+      console.error(`[McpClientManager] Failed to create SSE transport:`, error);
+      throw new McpError("Failed to create SSE transport", "TRANSPORT_ERROR", 500, error);
     }
 
+    return this.connectWithTransport(sessionId, serverUrl, transport, "sse");
+  }
+
+  /**
+   * Connect to a local MCP server via stdio (spawns a child process)
+   */
+  async connectStdio(config: StdioTransportConfig): Promise<{ sessionId: string; tools: Tool[] }> {
+    const sessionId = uuidv4();
+    const description = `${config.command} ${(config.args || []).join(" ")}`;
+    console.log(`[McpClientManager] Connecting via stdio: ${description} (Session: ${sessionId})`);
+
+    // Create the stdio transport
+    let transport: StdioClientTransport;
+    try {
+      transport = new StdioClientTransport({
+        command: config.command,
+        args: config.args,
+        env: config.env,
+        cwd: config.cwd,
+        stderr: "pipe", // Capture stderr for debugging
+      });
+    } catch (error) {
+      console.error(`[McpClientManager] Failed to create stdio transport:`, error);
+      throw new McpError("Failed to create stdio transport", "TRANSPORT_ERROR", 500, error);
+    }
+
+    // Log stderr output for debugging (can attach before start)
+    if (transport.stderr) {
+      transport.stderr.on("data", (data: Buffer) => {
+        console.log(`[McpClientManager] [${sessionId.slice(0, 8)}] stderr: ${data.toString().trim()}`);
+      });
+    }
+
+    // Note: We don't call start() here - client.connect() does that automatically
+    const result = await this.connectWithTransport(sessionId, description, transport, "stdio");
+    
+    // Get PID after connection (process is now started)
+    const session = this.sessions.get(sessionId);
+    if (session && transport.pid) {
+      session.pid = transport.pid;
+      console.log(`[McpClientManager] Stdio process PID: ${transport.pid}`);
+    }
+    
+    return result;
+  }
+
+  /**
+   * Common connection logic for all transport types
+   */
+  private async connectWithTransport(
+    sessionId: string,
+    serverUrl: string,
+    transport: Transport,
+    transportType: TransportType,
+    pid?: number
+  ): Promise<{ sessionId: string; tools: Tool[] }> {
     // Create the MCP client
     const client = new Client(
-      {
-        name: "universal-mcp-gateway",
-        version: "1.0.0",
-      },
-      {
-        capabilities: {},
-      }
+      { name: "universal-mcp-gateway", version: "1.0.0" },
+      { capabilities: {} }
     );
 
-    // Create session object (initially connecting)
+    // Create session object
     const session: ActiveSession = {
       sessionId,
       serverUrl,
       client,
       transport,
+      transportType,
       tools: [],
       createdAt: new Date(),
       status: "connecting",
+      pid,
     };
 
-    // Store session before connecting (for cleanup on failure)
+    // Store session before connecting
     this.sessions.set(sessionId, session);
 
     try {
-      // Connect the client to the transport
-      console.log(`[McpClientManager] Establishing connection (Session: ${sessionId})`);
+      console.log(`[McpClientManager] Establishing ${transportType} connection (Session: ${sessionId})`);
       await client.connect(transport);
       
       session.status = "connected";
-      console.log(`[McpClientManager] Connected successfully (Session: ${sessionId})`);
+      console.log(`[McpClientManager] Connected successfully via ${transportType} (Session: ${sessionId})`);
 
-      // Discover tools immediately after connection
+      // Discover tools
       const tools = await this.discoverTools(sessionId);
-      
       console.log(`[McpClientManager] Session ${sessionId} ready with ${tools.length} tools`);
       
       return { sessionId, tools };
     } catch (error) {
-      // Clean up on connection failure
       console.error(`[McpClientManager] Connection failed (Session: ${sessionId}):`, error);
       session.status = "error";
       
-      // Attempt cleanup
       try {
         await transport.close();
       } catch {
@@ -153,20 +239,20 @@ export class McpClientManager {
   }
 
   /**
+   * Legacy connect method (SSE only) - for backward compatibility
+   */
+  async connect(serverUrl: string): Promise<{ sessionId: string; tools: Tool[] }> {
+    return this.connectSse(serverUrl);
+  }
+
+  /**
    * Discover tools available on the connected MCP server
-   * 
-   * @param sessionId - The session ID to discover tools for
-   * @returns List of available tools
    */
   private async discoverTools(sessionId: string): Promise<Tool[]> {
     const session = this.sessions.get(sessionId);
     
     if (!session) {
-      throw new McpError(
-        `Session ${sessionId} not found`,
-        "SESSION_NOT_FOUND",
-        404
-      );
+      throw new McpError(`Session ${sessionId} not found`, "SESSION_NOT_FOUND", 404);
     }
 
     console.log(`[McpClientManager] Discovering tools (Session: ${sessionId})`);
@@ -193,19 +279,12 @@ export class McpClientManager {
 
   /**
    * Get tools for a session (from cache)
-   * 
-   * @param sessionId - The session ID
-   * @returns Cached list of tools
    */
   getTools(sessionId: string): Tool[] {
     const session = this.sessions.get(sessionId);
     
     if (!session) {
-      throw new McpError(
-        `Session ${sessionId} not found`,
-        "SESSION_NOT_FOUND",
-        404
-      );
+      throw new McpError(`Session ${sessionId} not found`, "SESSION_NOT_FOUND", 404);
     }
 
     if (session.status !== "connected") {
@@ -221,19 +300,12 @@ export class McpClientManager {
 
   /**
    * Refresh tools list from the server
-   * 
-   * @param sessionId - The session ID
-   * @returns Updated list of tools
    */
   async refreshTools(sessionId: string): Promise<Tool[]> {
     const session = this.sessions.get(sessionId);
     
     if (!session) {
-      throw new McpError(
-        `Session ${sessionId} not found`,
-        "SESSION_NOT_FOUND",
-        404
-      );
+      throw new McpError(`Session ${sessionId} not found`, "SESSION_NOT_FOUND", 404);
     }
 
     if (session.status !== "connected") {
@@ -248,12 +320,7 @@ export class McpClientManager {
   }
 
   /**
-   * Execute a tool on the remote MCP server
-   * 
-   * @param sessionId - The session ID
-   * @param toolName - The name of the tool to execute
-   * @param args - Arguments to pass to the tool
-   * @returns The tool execution result
+   * Execute a tool on the MCP server
    */
   async callTool(
     sessionId: string,
@@ -263,11 +330,7 @@ export class McpClientManager {
     const session = this.sessions.get(sessionId);
     
     if (!session) {
-      throw new McpError(
-        `Session ${sessionId} not found`,
-        "SESSION_NOT_FOUND",
-        404
-      );
+      throw new McpError(`Session ${sessionId} not found`, "SESSION_NOT_FOUND", 404);
     }
 
     if (session.status !== "connected") {
@@ -288,8 +351,7 @@ export class McpClientManager {
       );
     }
 
-    console.log(`[McpClientManager] Calling tool '${toolName}' (Session: ${sessionId})`);
-    console.log(`[McpClientManager] Arguments:`, JSON.stringify(args, null, 2));
+    console.log(`[McpClientManager] Calling tool '${toolName}' via ${session.transportType} (Session: ${sessionId})`);
 
     try {
       const startTime = Date.now();
@@ -301,15 +363,9 @@ export class McpClientManager {
 
       console.log(`[McpClientManager] Tool '${toolName}' executed in ${executionTime}ms`);
       
-      // Check if the result indicates an error
       if (result.isError) {
         console.warn(`[McpClientManager] Tool '${toolName}' returned an error:`, result.content);
-        throw new McpError(
-          `Tool execution returned an error`,
-          "TOOL_EXECUTION_ERROR",
-          400,
-          result.content
-        );
+        throw new McpError("Tool execution returned an error", "TOOL_EXECUTION_ERROR", 400, result.content);
       }
 
       return {
@@ -333,31 +389,22 @@ export class McpClientManager {
 
   /**
    * Disconnect a session and clean up resources
-   * 
-   * @param sessionId - The session ID to disconnect
    */
   async disconnect(sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId);
     
     if (!session) {
-      throw new McpError(
-        `Session ${sessionId} not found`,
-        "SESSION_NOT_FOUND",
-        404
-      );
+      throw new McpError(`Session ${sessionId} not found`, "SESSION_NOT_FOUND", 404);
     }
 
-    console.log(`[McpClientManager] Disconnecting session ${sessionId}`);
+    console.log(`[McpClientManager] Disconnecting ${session.transportType} session ${sessionId}`);
 
     try {
-      // Close the transport
       await session.transport.close();
       session.status = "disconnected";
-      
       console.log(`[McpClientManager] Session ${sessionId} disconnected successfully`);
     } catch (error) {
       console.error(`[McpClientManager] Error during disconnect (Session: ${sessionId}):`, error);
-      // Still remove the session even if close fails
     } finally {
       this.sessions.delete(sessionId);
     }
@@ -365,9 +412,6 @@ export class McpClientManager {
 
   /**
    * Get session information
-   * 
-   * @param sessionId - The session ID
-   * @returns Session information (without internal client details)
    */
   getSessionInfo(sessionId: string): Omit<ActiveSession, "client" | "transport"> | null {
     const session = this.sessions.get(sessionId);
@@ -379,17 +423,16 @@ export class McpClientManager {
     return {
       sessionId: session.sessionId,
       serverUrl: session.serverUrl,
+      transportType: session.transportType,
       tools: session.tools,
       createdAt: session.createdAt,
       status: session.status,
+      pid: session.pid,
     };
   }
 
   /**
    * Check if a session exists
-   * 
-   * @param sessionId - The session ID
-   * @returns Whether the session exists
    */
   hasSession(sessionId: string): boolean {
     return this.sessions.has(sessionId);
@@ -397,8 +440,6 @@ export class McpClientManager {
 
   /**
    * Get all active sessions
-   * 
-   * @returns List of all active session IDs and their info
    */
   getAllSessions(): Array<Omit<ActiveSession, "client" | "transport">> {
     const sessions: Array<Omit<ActiveSession, "client" | "transport">> = [];
@@ -407,9 +448,11 @@ export class McpClientManager {
       sessions.push({
         sessionId: session.sessionId,
         serverUrl: session.serverUrl,
+        transportType: session.transportType,
         tools: session.tools,
         createdAt: session.createdAt,
         status: session.status,
+        pid: session.pid,
       });
     }
     
@@ -425,10 +468,9 @@ export class McpClientManager {
 
   /**
    * Get all tools from all connected sessions (aggregated)
-   * Each tool includes metadata about which session it belongs to
    */
-  getAllTools(): Array<Tool & { _sessionId: string; _serverUrl: string }> {
-    const allTools: Array<Tool & { _sessionId: string; _serverUrl: string }> = [];
+  getAllTools(): Array<Tool & { _sessionId: string; _serverUrl: string; _transportType: TransportType }> {
+    const allTools: Array<Tool & { _sessionId: string; _serverUrl: string; _transportType: TransportType }> = [];
     
     for (const session of this.sessions.values()) {
       if (session.status === "connected") {
@@ -437,6 +479,7 @@ export class McpClientManager {
             ...tool,
             _sessionId: session.sessionId,
             _serverUrl: session.serverUrl,
+            _transportType: session.transportType,
           });
         }
       }
@@ -500,4 +543,3 @@ export class McpClientManager {
 
 // Export a singleton instance
 export const mcpClientManager = new McpClientManager();
-

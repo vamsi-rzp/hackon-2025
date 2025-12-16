@@ -3,6 +3,49 @@
  */
 
 /**
+ * Transport type for MCP connections
+ */
+export type McpTransportType = "sse" | "stdio" | "streamable-http";
+
+/**
+ * SSE transport configuration
+ */
+export interface SseTransportConfig {
+  type: "sse";
+  /** SSE endpoint URL */
+  url: string;
+}
+
+/**
+ * Streamable HTTP transport configuration
+ */
+export interface StreamableHttpTransportConfig {
+  type: "streamable-http";
+  /** HTTP endpoint URL */
+  url: string;
+}
+
+/**
+ * Stdio transport configuration
+ */
+export interface StdioTransportConfig {
+  type: "stdio";
+  /** Command to execute */
+  command: string;
+  /** Command arguments */
+  args?: string[];
+  /** Environment variables */
+  env?: Record<string, string>;
+  /** Working directory */
+  cwd?: string;
+}
+
+/**
+ * Union type for all transport configurations
+ */
+export type McpTransportConfig = SseTransportConfig | StdioTransportConfig | StreamableHttpTransportConfig;
+
+/**
  * Pre-configured MCP server definition
  */
 export interface McpPreset {
@@ -12,8 +55,8 @@ export interface McpPreset {
   name: string;
   /** Description of what this MCP server provides */
   description: string;
-  /** SSE endpoint URL */
-  url: string;
+  /** Transport configuration */
+  transport: McpTransportConfig;
   /** Whether to auto-connect on startup */
   autoConnect: boolean;
   /** Tags for categorization */
@@ -21,14 +64,40 @@ export interface McpPreset {
 }
 
 /**
+ * Legacy preset format (for backward compatibility)
+ */
+interface LegacyMcpPreset {
+  id: string;
+  name: string;
+  description: string;
+  url: string;
+  autoConnect: boolean;
+  tags?: string[];
+}
+
+/**
  * Parse MCP presets from environment variable
- * Format: JSON array of McpPreset objects
+ * Supports both new format (with transport) and legacy format (with url)
  */
 function parsePresets(): McpPreset[] {
   const presetsJson = process.env.MCP_PRESETS;
   if (presetsJson) {
     try {
-      return JSON.parse(presetsJson);
+      const parsed = JSON.parse(presetsJson) as (McpPreset | LegacyMcpPreset)[];
+      return parsed.map(p => {
+        // Handle legacy format
+        if ('url' in p && !('transport' in p)) {
+          return {
+            id: p.id,
+            name: p.name,
+            description: p.description,
+            transport: { type: "sse", url: p.url } as SseTransportConfig,
+            autoConnect: p.autoConnect,
+            tags: p.tags,
+          };
+        }
+        return p as McpPreset;
+      });
     } catch (e) {
       console.warn("[Config] Failed to parse MCP_PRESETS:", e);
     }
@@ -60,24 +129,38 @@ export const config = {
 
   // Pre-configured MCP servers
   mcpPresets: [
-    // Built-in presets (can be overridden by MCP_PRESETS env var)
+    // SSE-based servers
     {
       id: "sample-tools",
       name: "Sample Tools Server",
       description: "Demo MCP server with echo, calculator, weather, and utility tools",
-      url: "http://localhost:8080/sse",
+      transport: { type: "sse", url: "http://localhost:8080/sse" },
       autoConnect: true,
       tags: ["demo", "utilities"],
     },
-
     {
       id: "mermaid-mcp",
       name: "Mermaid MCP",
-      description: "Mermaid MCP server",
-      url: "https://mcp.mermaidchart.com/sse",
+      description: "Mermaid diagram creation and rendering",
+      transport: { type: "sse", url: "https://mcp.mermaidchart.com/sse" },
       autoConnect: true,
-      tags: ["mermaid", "mcp"],
+      tags: ["visualization", "diagrams"],
     },
+
+    // Example stdio-based server (commented out - uncomment if you have npx available)
+    // {
+    //   id: "filesystem-mcp",
+    //   name: "Filesystem MCP",
+    //   description: "File system operations MCP server",
+    //   transport: {
+    //     type: "stdio",
+    //     command: "npx",
+    //     args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+    //   },
+    //   autoConnect: false,
+    //   tags: ["filesystem", "files"],
+    // },
+
     // Add more built-in presets here as needed
     ...parsePresets(),
   ] as McpPreset[],
