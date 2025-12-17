@@ -141,10 +141,13 @@ export async function connectAllPresets(
   );
 
   results.forEach((result, index) => {
+    const preset = presets[index];
+    if (!preset) return;
+    
     if (result.status === "fulfilled") {
-      connected.push(presets[index].id);
+      connected.push(preset.id);
     } else {
-      failed.push(presets[index].id);
+      failed.push(preset.id);
     }
   });
 

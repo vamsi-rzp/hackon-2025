@@ -187,7 +187,7 @@ export class PresetManager {
         connected++;
       } else {
         failed++;
-        console.error(`[PresetManager] Failed to auto-connect '${preset.name}':`, result.reason);
+        console.error(`[PresetManager] Failed to auto-connect '${preset?.name}':`, result.reason);
       }
     });
 

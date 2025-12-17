@@ -1,6 +1,6 @@
 import type { Tool } from './types';
 
-const API_BASE = '/api';
+const API_BASE = 'http://localhost:3000/api';
 
 export interface ConnectResponse {
   sessionId: string;

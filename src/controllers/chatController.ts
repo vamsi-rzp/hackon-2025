@@ -223,10 +223,19 @@ export async function chatAggregated(
     // Get ALL tools from ALL connected sessions
     const allTools = mcpClientManager.getAllTools();
     
-    // Strip session metadata for LLM (it doesn't need to know)
-    const toolsForLlm = allTools.map(({ _sessionId, _serverUrl, ...tool }) => tool);
+    // Deduplicate tools by name (keep first occurrence) and strip session metadata for LLM
+    const seenTools = new Set<string>();
+    const toolsForLlm = allTools
+      .filter(tool => {
+        if (seenTools.has(tool.name)) {
+          return false;
+        }
+        seenTools.add(tool.name);
+        return true;
+      })
+      .map(({ _sessionId, _serverUrl, ...tool }) => tool);
 
-    console.log(`[ChatController] Aggregated chat with ${toolsForLlm.length} tools from ${mcpClientManager.getSessionCount()} sessions`);
+    console.log(`[ChatController] Aggregated chat with ${toolsForLlm.length} unique tools (${allTools.length} total) from ${mcpClientManager.getSessionCount()} sessions`);
 
     // Call LLM with all tools
     const llmResponse = await bedrockService.chat(
