@@ -13,6 +13,13 @@ export interface Tool {
   };
 }
 
+export interface ToolResultItem {
+  name: string;
+  arguments: Record<string, unknown>;
+  result: unknown;
+  executionTime: number;
+}
+
 export interface Message {
   id: string;
   role: 'user' | 'bot' | 'system' | 'tool';
@@ -22,6 +29,8 @@ export interface Message {
   toolArgs?: Record<string, unknown>;
   executionTime?: number;
   isLoading?: boolean;
+  /** Raw tool results for frontend rendering */
+  toolResults?: ToolResultItem[];
 }
 
 export interface Session {

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Bot, Send, Loader2, Sparkles, X, Zap, Wrench, Plus } from 'lucide-react';
-import type { Message } from './types';
+import { Bot, Send, Loader2, Sparkles, X, Zap, Wrench, Plus, Image, BarChart3, FileJson, ExternalLink } from 'lucide-react';
+import type { Message, ToolResultItem } from './types';
 import { api, type ChatMessage as ApiChatMessage, type PresetInfo, type AggregatedTool } from './api';
 import './App.css';
 
@@ -197,17 +197,12 @@ function App() {
           { role: 'assistant', content: response.reply },
         ]);
 
-        let toolInfo = '';
-        if (response.toolsUsed && response.toolsUsed.length > 0) {
-          toolInfo = response.toolsUsed
-            .map(t => `\n\n🔧 *Used ${t.name}* (${t.executionTime}ms)`)
-            .join('');
-        }
-
+        // Pass raw tool results to frontend for rendering
         updateMessage(botMsgId, {
-          content: response.reply + toolInfo,
+          content: response.reply,
           toolName: response.toolsUsed?.[0]?.name,
           executionTime: response.toolsUsed?.[0]?.executionTime,
+          toolResults: response.toolsUsed as ToolResultItem[],
           isLoading: false,
         });
       } else {
@@ -427,7 +422,17 @@ function MessageBubble({ message }: { message: Message }) {
               <span></span><span></span><span></span>
             </div>
           ) : (
-            <div className="text" dangerouslySetInnerHTML={{ __html: formatMessage(message.content) }} />
+            <>
+              <div className="text" dangerouslySetInnerHTML={{ __html: formatMessage(message.content) }} />
+              {/* Render tool results */}
+              {message.toolResults && message.toolResults.length > 0 && (
+                <div className="tool-results">
+                  {message.toolResults.map((tool, idx) => (
+                    <ToolResultRenderer key={idx} tool={tool} />
+                  ))}
+                </div>
+              )}
+            </>
           )}
         </div>
         {message.toolName && !message.isLoading && (
@@ -448,6 +453,199 @@ function formatMessage(content: string): string {
     .replace(/\*(.+?)\*/g, '<em>$1</em>')
     .replace(/`(.+?)`/g, '<code>$1</code>')
     .replace(/\n/g, '<br/>');
+}
+
+/**
+ * Smart renderer for tool results
+ * Detects content type and renders appropriately
+ */
+function ToolResultRenderer({ tool }: { tool: ToolResultItem }) {
+  const { name, result, executionTime } = tool;
+  
+  // Extract renderable content from result
+  const content = extractContent(result);
+  
+  return (
+    <div className="tool-result-card">
+      <div className="tool-result-header">
+        <Zap size={14} />
+        <span className="tool-name">{name}</span>
+        <span className="tool-time">{executionTime}ms</span>
+      </div>
+      <div className="tool-result-content">
+        {content.map((item, idx) => (
+          <ContentRenderer key={idx} item={item} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+interface ContentItem {
+  type: 'image' | 'chart' | 'diagram' | 'url' | 'text' | 'json' | 'code';
+  value: string;
+  label?: string;
+}
+
+/**
+ * Extract renderable content from tool result
+ */
+function extractContent(result: unknown): ContentItem[] {
+  const items: ContentItem[] = [];
+  
+  // Handle array results (MCP content format)
+  if (Array.isArray(result)) {
+    for (const item of result) {
+      if (typeof item === 'object' && item !== null) {
+        // MCP text content
+        if ('text' in item && typeof item.text === 'string') {
+          items.push(...parseTextContent(item.text));
+        }
+        // MCP image content
+        if ('type' in item && item.type === 'image' && 'data' in item) {
+          items.push({ type: 'image', value: `data:image/png;base64,${item.data}` });
+        }
+      } else if (typeof item === 'string') {
+        items.push(...parseTextContent(item));
+      }
+    }
+  } else if (typeof result === 'string') {
+    items.push(...parseTextContent(result));
+  } else if (typeof result === 'object' && result !== null) {
+    // Check for common result patterns
+    const obj = result as Record<string, unknown>;
+    
+    if ('url' in obj && typeof obj.url === 'string') {
+      items.push(...parseTextContent(obj.url));
+    }
+    if ('imageUrl' in obj && typeof obj.imageUrl === 'string') {
+      items.push({ type: 'image', value: obj.imageUrl });
+    }
+    if ('chartUrl' in obj && typeof obj.chartUrl === 'string') {
+      items.push({ type: 'chart', value: obj.chartUrl });
+    }
+    
+    // If no special fields found, show as JSON
+    if (items.length === 0) {
+      items.push({ type: 'json', value: JSON.stringify(result, null, 2) });
+    }
+  }
+  
+  return items.length > 0 ? items : [{ type: 'text', value: String(result) }];
+}
+
+/**
+ * Parse text content and detect URLs, images, etc.
+ */
+function parseTextContent(text: string): ContentItem[] {
+  const items: ContentItem[] = [];
+  
+  // URL patterns
+  const urlRegex = /(https?:\/\/[^\s<>"{}|\\^`[\]]+)/g;
+  const urls = text.match(urlRegex) || [];
+  
+  for (const url of urls) {
+    // Image URLs
+    if (/\.(png|jpg|jpeg|gif|webp|svg)(\?|$)/i.test(url)) {
+      items.push({ type: 'image', value: url, label: 'Image' });
+    }
+    // QuickChart URLs
+    else if (url.includes('quickchart.io')) {
+      items.push({ type: 'chart', value: url, label: 'Chart' });
+    }
+    // Mermaid diagram URLs
+    else if (url.includes('mermaid.ink') || url.includes('mermaidchart')) {
+      items.push({ type: 'diagram', value: url, label: 'Diagram' });
+    }
+    // Other URLs
+    else {
+      items.push({ type: 'url', value: url });
+    }
+  }
+  
+  // If no URLs found, treat as text/code
+  if (items.length === 0) {
+    // Check if it looks like code/JSON
+    if (text.trim().startsWith('{') || text.trim().startsWith('[')) {
+      try {
+        JSON.parse(text);
+        items.push({ type: 'json', value: text });
+      } catch {
+        items.push({ type: 'text', value: text });
+      }
+    } else if (text.includes('\n') && (text.includes('  ') || text.includes('\t'))) {
+      items.push({ type: 'code', value: text });
+    } else {
+      items.push({ type: 'text', value: text });
+    }
+  }
+  
+  return items;
+}
+
+/**
+ * Render individual content item based on type
+ */
+function ContentRenderer({ item }: { item: ContentItem }) {
+  const [imageError, setImageError] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  
+  switch (item.type) {
+    case 'image':
+    case 'chart':
+    case 'diagram':
+      return (
+        <div className="content-media">
+          {item.label && <span className="media-label"><Image size={12} /> {item.label}</span>}
+          {!imageError ? (
+            <img 
+              src={item.value} 
+              alt={item.label || 'Tool output'} 
+              onError={() => setImageError(true)}
+              onClick={() => window.open(item.value, '_blank')}
+              className="result-image"
+            />
+          ) : (
+            <a href={item.value} target="_blank" rel="noopener noreferrer" className="fallback-link">
+              <ExternalLink size={14} /> View {item.label || 'content'}
+            </a>
+          )}
+        </div>
+      );
+    
+    case 'url':
+      return (
+        <a href={item.value} target="_blank" rel="noopener noreferrer" className="content-url">
+          <ExternalLink size={14} />
+          {item.value.length > 60 ? item.value.slice(0, 60) + '...' : item.value}
+        </a>
+      );
+    
+    case 'json':
+      return (
+        <div className="content-json">
+          <div className="json-header" onClick={() => setExpanded(!expanded)}>
+            <FileJson size={14} />
+            <span>JSON Data</span>
+            <span className="expand-toggle">{expanded ? '▼' : '▶'}</span>
+          </div>
+          {expanded && (
+            <pre className="json-content">{item.value}</pre>
+          )}
+        </div>
+      );
+    
+    case 'code':
+      return (
+        <pre className="content-code">{item.value}</pre>
+      );
+    
+    case 'text':
+    default:
+      return (
+        <div className="content-text" dangerouslySetInnerHTML={{ __html: formatMessage(item.value) }} />
+      );
+  }
 }
 
 export default App;
