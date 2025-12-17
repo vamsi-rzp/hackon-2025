@@ -1,8 +1,21 @@
 import type { Request, Response, NextFunction } from "express";
 import { mcpClientManager, McpError } from "../services/McpClientManager.js";
-import { bedrockService, type ToolCall, type ToolResult } from "../services/BedrockService.js";
-import type { ErrorResponse, ChatRequest, ChatResponseBody, ChatMessage } from "../types/index.js";
+import { bedrockService, type ToolCall, type ToolResult, type ChatOptions } from "../services/BedrockService.js";
+import type { ErrorResponse, ChatRequest, ChatResponseBody, ChatMessage, PromptOptions } from "../types/index.js";
 import { sendError } from "../utils/index.js";
+import { config } from "../config/index.js";
+
+/**
+ * Convert API prompt options to BedrockService ChatOptions
+ */
+function buildChatOptions(promptOptions?: PromptOptions, legacySystemPrompt?: string): ChatOptions {
+  return {
+    systemPrompt: promptOptions?.systemPrompt ?? legacySystemPrompt,
+    toolResultPrompt: promptOptions?.toolResultPrompt,
+    temperature: promptOptions?.temperature,
+    maxTokens: promptOptions?.maxTokens,
+  };
+}
 
 /**
  * POST /api/chat
@@ -16,7 +29,7 @@ export async function chatStandalone(
   next: NextFunction
 ): Promise<void> {
   try {
-    const { message, history = [], systemPrompt } = req.body;
+    const { message, history = [], promptOptions, systemPrompt } = req.body;
 
     if (!message || typeof message !== "string") {
       sendError(res, "message is required and must be a string", "INVALID_REQUEST", 400);
@@ -25,12 +38,19 @@ export async function chatStandalone(
 
     console.log(`[ChatController] Standalone chat request: "${message.slice(0, 50)}..."`);
 
+    // Build chat options from prompt config
+    const chatOptions = buildChatOptions(promptOptions, systemPrompt);
+    // Use standalone prompt as default for no-tools chat
+    if (!chatOptions.systemPrompt) {
+      chatOptions.systemPrompt = config.prompts.standalonePrompt;
+    }
+
     // Call LLM without tools
     const llmResponse = await bedrockService.chat(
       message, 
       history as ChatMessage[], 
       undefined, // No tools
-      systemPrompt || "You are a helpful AI assistant. Be concise and friendly in your responses."
+      chatOptions
     );
 
     res.json({
@@ -62,7 +82,7 @@ export async function chat(
 ): Promise<void> {
   try {
     const { sessionId } = req.params;
-    const { message, history = [], systemPrompt } = req.body;
+    const { message, history = [], promptOptions, systemPrompt } = req.body;
 
     // Validate inputs
     if (!sessionId) {
@@ -77,11 +97,14 @@ export async function chat(
 
     console.log(`[ChatController] Chat request for session ${sessionId}: "${message.slice(0, 50)}..."`);
 
+    // Build chat options from prompt config
+    const chatOptions = buildChatOptions(promptOptions, systemPrompt);
+
     // Get available tools for this session
     const tools = mcpClientManager.getTools(sessionId);
 
     // Call LLM with tools
-    const llmResponse = await bedrockService.chat(message, history as ChatMessage[], tools, systemPrompt);
+    const llmResponse = await bedrockService.chat(message, history as ChatMessage[], tools, chatOptions);
 
     const toolsUsed: ChatResponseBody["toolsUsed"] = [];
 
@@ -143,7 +166,7 @@ export async function chat(
         llmResponse.toolCalls,
         toolResults,
         tools,
-        systemPrompt
+        chatOptions
       );
 
       res.json({
@@ -187,12 +210,15 @@ export async function chatAggregated(
   next: NextFunction
 ): Promise<void> {
   try {
-    const { message, history = [], systemPrompt } = req.body;
+    const { message, history = [], promptOptions, systemPrompt } = req.body;
 
     if (!message || typeof message !== "string") {
       sendError(res, "message is required and must be a string", "INVALID_REQUEST", 400);
       return;
     }
+
+    // Build chat options from prompt config
+    const chatOptions = buildChatOptions(promptOptions, systemPrompt);
 
     // Get ALL tools from ALL connected sessions
     const allTools = mcpClientManager.getAllTools();
@@ -207,7 +233,7 @@ export async function chatAggregated(
       message, 
       history as ChatMessage[], 
       toolsForLlm.length > 0 ? toolsForLlm : undefined, 
-      systemPrompt
+      chatOptions
     );
 
     const toolsUsed: ChatResponseBody["toolsUsed"] = [];
@@ -270,7 +296,7 @@ export async function chatAggregated(
         llmResponse.toolCalls,
         toolResults,
         toolsForLlm,
-        systemPrompt
+        chatOptions
       );
 
       res.json({
@@ -337,5 +363,36 @@ export async function chatStream(
   res.status(501).json({
     error: "Streaming not yet implemented",
     code: "NOT_IMPLEMENTED",
+  });
+}
+
+/**
+ * GET /api/prompts
+ * 
+ * Get the current prompt configuration (defaults)
+ */
+export function getPromptConfig(
+  _req: Request,
+  res: Response,
+  _next: NextFunction
+): void {
+  res.json({
+    prompts: config.prompts,
+    description: {
+      systemPrompt: "Used when LLM decides which tools to use based on user message",
+      toolResultPrompt: "Used when LLM processes and summarizes tool execution results",
+      standalonePrompt: "Used for pure LLM conversations without tools",
+    },
+    usage: {
+      note: "These are default prompts. You can override them per-request using promptOptions.",
+      example: {
+        message: "What's the weather?",
+        promptOptions: {
+          systemPrompt: "You are a weather expert assistant.",
+          toolResultPrompt: "Summarize the weather data in a friendly way.",
+          temperature: 0.8,
+        },
+      },
+    },
   });
 }

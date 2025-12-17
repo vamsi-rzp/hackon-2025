@@ -105,6 +105,35 @@ function parsePresets(): McpPreset[] {
   return [];
 }
 
+/**
+ * Prompt configuration for LLM interactions
+ */
+export interface PromptConfig {
+  /** System prompt for tool selection phase */
+  systemPrompt: string;
+  /** System prompt for processing tool results */
+  toolResultPrompt: string;
+  /** Prompt for standalone chat (no tools) */
+  standalonePrompt: string;
+}
+
+/**
+ * Default prompts - can be overridden via environment or API
+ */
+const defaultPrompts: PromptConfig = {
+  systemPrompt: process.env.LLM_SYSTEM_PROMPT ?? `You are a helpful AI assistant with access to various tools.
+When a user asks for something that can be accomplished with one of your tools, use the appropriate tool.
+Be concise and friendly in your responses. If you use a tool, briefly explain what you did.
+If the user's request doesn't match any available tool, respond helpfully with what you can do.`,
+
+  toolResultPrompt: process.env.LLM_TOOL_RESULT_PROMPT ?? `You are a helpful AI assistant. You just used some tools and received results.
+Summarize the results naturally for the user. Be concise and friendly.
+If the result contains images, charts, or diagrams (URLs), display them using markdown.
+If there were errors, explain them clearly and suggest alternatives.`,
+
+  standalonePrompt: process.env.LLM_STANDALONE_PROMPT ?? `You are a helpful AI assistant. Be concise and friendly in your responses.`,
+};
+
 export const config = {
   // Server settings
   server: {
@@ -119,6 +148,9 @@ export const config = {
     modelId: process.env.BEDROCK_MODEL_ID ?? "anthropic.claude-3-sonnet-20240229-v1:0",
     maxTokens: parseInt(process.env.BEDROCK_MAX_TOKENS ?? "2048", 10),
   },
+
+  // LLM Prompt configuration
+  prompts: defaultPrompts,
 
   // Feature flags
   features: {

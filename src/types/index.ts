@@ -23,6 +23,7 @@ export type {
   ChatRequest,
   ChatMessage,
   ChatResponseBody,
+  PromptOptions,
 } from "./api.types.js";
 
 // Preset types

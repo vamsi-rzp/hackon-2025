@@ -1,5 +1,12 @@
 import { Router } from "express";
-import { chat, chatStream, chatStandalone, chatAggregated, getAllTools } from "../controllers/chatController.js";
+import { 
+  chat, 
+  chatStream, 
+  chatStandalone, 
+  chatAggregated, 
+  getAllTools,
+  getPromptConfig 
+} from "../controllers/chatController.js";
 
 const router = Router();
 
@@ -9,6 +16,9 @@ const router = Router();
  * These routes handle LLM-powered chat.
  * Requires AWS Bedrock credentials to be configured.
  */
+
+// Get default prompt configuration
+router.get("/prompts", getPromptConfig);
 
 // Standalone chat - no MCP session required
 router.post("/chat", chatStandalone);

@@ -72,11 +72,28 @@ export interface HealthResponse {
 }
 
 /**
+ * Prompt configuration options for chat requests
+ */
+export interface PromptOptions {
+  /** Custom system prompt for tool selection phase */
+  systemPrompt?: string;
+  /** Custom prompt for processing tool results */
+  toolResultPrompt?: string;
+  /** Temperature for response generation (0-1, default 0.7) */
+  temperature?: number;
+  /** Maximum tokens in response */
+  maxTokens?: number;
+}
+
+/**
  * Chat request body
  */
 export interface ChatRequest {
   message: string;
   history?: ChatMessage[];
+  /** Prompt configuration options */
+  promptOptions?: PromptOptions;
+  /** @deprecated Use promptOptions.systemPrompt instead */
   systemPrompt?: string;
 }
 

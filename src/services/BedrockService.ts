@@ -9,7 +9,7 @@ import {
   type ConversationRole,
 } from "@aws-sdk/client-bedrock-runtime";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import { config } from "../config/index.js";
+import { config, type PromptConfig } from "../config/index.js";
 
 export interface ChatMessage {
   role: "user" | "assistant";
@@ -35,6 +35,20 @@ export interface ToolResult {
   toolUseId: string;
   result: unknown;
   isError?: boolean;
+}
+
+/**
+ * Options for customizing LLM behavior
+ */
+export interface ChatOptions {
+  /** Custom system prompt (overrides default) */
+  systemPrompt?: string;
+  /** Custom prompt for processing tool results */
+  toolResultPrompt?: string;
+  /** Temperature for response generation (0-1) */
+  temperature?: number;
+  /** Maximum tokens in response */
+  maxTokens?: number;
 }
 
 /**
@@ -90,7 +104,7 @@ export class BedrockService {
     userMessage: string,
     history: ChatMessage[] = [],
     tools?: Tool[],
-    systemPrompt?: string
+    options: ChatOptions = {}
   ): Promise<ChatResponse> {
     console.log(`[BedrockService] Chat request: "${userMessage.slice(0, 50)}..."`);
 
@@ -103,17 +117,9 @@ export class BedrockService {
       },
     ];
 
-    // Build system prompt
-    const system = systemPrompt
-      ? [{ text: systemPrompt }]
-      : [
-          {
-            text: `You are a helpful AI assistant with access to various tools. 
-When a user asks for something that can be accomplished with one of your tools, use the appropriate tool.
-Be concise and friendly in your responses. If you use a tool, briefly explain what you did.
-If the user's request doesn't match any available tool, respond helpfully with what you can do.`,
-          },
-        ];
+    // Use custom prompt or default from config
+    const systemPrompt = options.systemPrompt ?? config.prompts.systemPrompt;
+    const system = [{ text: systemPrompt }];
 
     // Build tool config if tools provided
     const toolConfig = tools && tools.length > 0
@@ -127,8 +133,8 @@ If the user's request doesn't match any available tool, respond helpfully with w
         system,
         toolConfig,
         inferenceConfig: {
-          maxTokens: config.bedrock.maxTokens,
-          temperature: 0.7,
+          maxTokens: options.maxTokens ?? config.bedrock.maxTokens,
+          temperature: options.temperature ?? 0.7,
         },
       });
 
@@ -182,7 +188,7 @@ If the user's request doesn't match any available tool, respond helpfully with w
     toolCalls: ToolCall[],
     toolResults: ToolResult[],
     tools?: Tool[],
-    systemPrompt?: string
+    options: ChatOptions = {}
   ): Promise<ChatResponse> {
     console.log(`[BedrockService] Continuing with ${toolResults.length} tool results`);
 
@@ -215,14 +221,9 @@ If the user's request doesn't match any available tool, respond helpfully with w
       },
     ];
 
-    const system = systemPrompt
-      ? [{ text: systemPrompt }]
-      : [
-          {
-            text: `You are a helpful AI assistant. You just used some tools and received results.
-Summarize the results naturally for the user. Be concise and friendly.`,
-          },
-        ];
+    // Use custom tool result prompt or default from config
+    const toolResultPrompt = options.toolResultPrompt ?? config.prompts.toolResultPrompt;
+    const system = [{ text: toolResultPrompt }];
 
     const toolConfig = tools && tools.length > 0
       ? this.convertToolsToBedrockFormat(tools)
@@ -235,8 +236,8 @@ Summarize the results naturally for the user. Be concise and friendly.`,
         system,
         toolConfig,
         inferenceConfig: {
-          maxTokens: config.bedrock.maxTokens,
-          temperature: 0.7,
+          maxTokens: options.maxTokens ?? config.bedrock.maxTokens,
+          temperature: options.temperature ?? 0.7,
         },
       });
 
@@ -281,9 +282,21 @@ Summarize the results naturally for the user. Be concise and friendly.`,
   /**
    * Simple text completion without tools
    */
-  async complete(prompt: string, systemPrompt?: string): Promise<string> {
-    const response = await this.chat(prompt, [], undefined, systemPrompt);
+  async complete(prompt: string, options: ChatOptions = {}): Promise<string> {
+    // Use standalone prompt if no custom prompt provided
+    const finalOptions = {
+      ...options,
+      systemPrompt: options.systemPrompt ?? config.prompts.standalonePrompt,
+    };
+    const response = await this.chat(prompt, [], undefined, finalOptions);
     return response.message;
+  }
+
+  /**
+   * Get the current prompt configuration
+   */
+  getPromptConfig(): typeof config.prompts {
+    return config.prompts;
   }
 }
 
