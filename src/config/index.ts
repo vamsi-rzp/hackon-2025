@@ -162,14 +162,14 @@ export const config = {
   // Pre-configured MCP servers
   mcpPresets: [
     // SSE-based servers
-    {
-      id: "sample-tools",
-      name: "Sample Tools Server",
-      description: "Demo MCP server with echo, calculator, weather, and utility tools",
-      transport: { type: "sse", url: "http://localhost:8080/sse" },
-      autoConnect: true,
-      tags: ["demo", "utilities"],
-    },
+    // {
+    //   id: "sample-tools",
+    //   name: "Sample Tools Server",
+    //   description: "Demo MCP server with echo, calculator, weather, and utility tools",
+    //   transport: { type: "sse", url: "http://localhost:8080/sse" },
+    //   autoConnect: true,
+    //   tags: ["demo", "utilities"],
+    // },
     {
       id: "mermaid-mcp",
       name: "Mermaid MCP",
