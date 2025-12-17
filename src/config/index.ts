@@ -122,12 +122,32 @@ export interface PromptConfig {
  */
 const defaultPrompts: PromptConfig = {
   systemPrompt: process.env.LLM_SYSTEM_PROMPT ?? `You are a helpful AI assistant with access to various tools.
-When a user asks for something that can be accomplished with one of your tools, use the appropriate tool.
-Be concise and friendly in your responses. If you use a tool, briefly explain what you did.
-If the user's request doesn't match any available tool, respond helpfully with what you can do.`,
+
+IMPORTANT: For multi-step tasks, you can and SHOULD use multiple tools in sequence. After each tool returns results, analyze if you need to use another tool to complete the user's request.
+
+For example, if the user asks to "fetch rules, generate test cases, and run tests":
+1. First use fetch_merchant_rules to get the rules
+2. Then use generate_test_cases with the results
+3. Finally use execute_test_cases to run and validate them
+
+When a user asks for something that requires multiple steps:
+- Break it down into individual tool calls
+- Use each tool's output as input for the next step
+- Continue until you have completed all requested tasks
+
+Be concise and friendly in your responses. If you use tools, briefly explain what you're doing at each step.`,
 
   toolResultPrompt: process.env.LLM_TOOL_RESULT_PROMPT ?? `You are a helpful AI assistant. You just used some tools and received results.
-Summarize the results naturally for the user. Be concise and friendly.
+
+IMPORTANT: Check if the user's original request requires MORE tools to be called.
+- If yes, call the next appropriate tool(s) to continue the workflow
+- If no, summarize the final results naturally for the user
+
+For multi-step workflows like "fetch rules, generate tests, execute tests":
+- After fetching rules, you should call generate_test_cases
+- After generating test cases, you should call execute_test_cases
+- Only summarize when ALL requested steps are complete
+
 If the result contains images, charts, or diagrams (URLs), display them using markdown.
 If there were errors, explain them clearly and suggest alternatives.`,
 
@@ -171,12 +191,12 @@ export const config = {
     //   tags: ["demo", "utilities"],
     // },
     {
-      id: "mermaid-mcp",
-      name: "Mermaid MCP",
-      description: "Mermaid diagram creation and rendering",
-      transport: { type: "sse", url: "https://mcp.mermaidchart.com/sse" },
+      id: "mock-payment-rules",
+      name: "Mock Payment Rules Server",
+      description: "Mock server for testing payment routing rules - fetch rules, generate test cases, create payment requests, and execute tests",
+      transport: { type: "sse", url: "http://localhost:8081/sse" },
       autoConnect: true,
-      tags: ["visualization", "diagrams"],
+      tags: ["mock", "payment", "testing"],
     },
 
     // Example stdio-based server (commented out - uncomment if you have npx available)

@@ -203,12 +203,15 @@ export async function chat(
  * 
  * LLM chat with tools aggregated from ALL connected MCP sessions.
  * Automatically routes tool calls to the correct session.
+ * Supports multi-step tool chaining (agentic loop).
  */
 export async function chatAggregated(
   req: Request<object, ChatResponseBody | ErrorResponse, ChatRequest>,
   res: Response<ChatResponseBody | ErrorResponse>,
   next: NextFunction
 ): Promise<void> {
+  const MAX_TOOL_ITERATIONS = 10; // Safety limit to prevent infinite loops
+
   try {
     const { message, history = [], promptOptions, systemPrompt } = req.body;
 
@@ -238,18 +241,24 @@ export async function chatAggregated(
     console.log(`[ChatController] Aggregated chat with ${toolsForLlm.length} unique tools (${allTools.length} total) from ${mcpClientManager.getSessionCount()} sessions`);
 
     // Call LLM with all tools
-    const llmResponse = await bedrockService.chat(
+    let llmResponse = await bedrockService.chat(
       message, 
       history as ChatMessage[], 
       toolsForLlm.length > 0 ? toolsForLlm : undefined, 
       chatOptions
     );
 
-    const toolsUsed: ChatResponseBody["toolsUsed"] = [];
+    const allToolsUsed: ChatResponseBody["toolsUsed"] = [];
+    let iterations = 0;
 
-    // If LLM wants to use tools, execute them (routing to correct session)
-    if (llmResponse.toolCalls && llmResponse.toolCalls.length > 0) {
-      console.log(`[ChatController] LLM requested ${llmResponse.toolCalls.length} tool call(s)`);
+    // Agentic loop: keep executing tools until LLM stops requesting them
+    // Track conversation for multi-turn tool use
+    let allToolCalls: ToolCall[] = [];
+    let allToolResults: ToolResult[] = [];
+
+    while (llmResponse.toolCalls && llmResponse.toolCalls.length > 0 && iterations < MAX_TOOL_ITERATIONS) {
+      iterations++;
+      console.log(`[ChatController] Tool iteration ${iterations}: LLM requested ${llmResponse.toolCalls.length} tool call(s)`);
 
       const toolResults: ToolResult[] = [];
 
@@ -272,7 +281,7 @@ export async function chatAggregated(
             isError: false,
           });
 
-          toolsUsed.push({
+          allToolsUsed.push({
             name: toolCall.toolName,
             arguments: toolCall.arguments,
             result: result.content,
@@ -289,7 +298,7 @@ export async function chatAggregated(
             isError: true,
           });
 
-          toolsUsed.push({
+          allToolsUsed.push({
             name: toolCall.toolName,
             arguments: toolCall.arguments,
             result: { error: error instanceof Error ? error.message : "Unknown error" },
@@ -298,28 +307,34 @@ export async function chatAggregated(
         }
       }
 
-      // Continue conversation with tool results
-      const finalResponse = await bedrockService.continueWithToolResults(
+      // Accumulate tool calls and results for context
+      allToolCalls = [...allToolCalls, ...llmResponse.toolCalls];
+      allToolResults = [...allToolResults, ...toolResults];
+
+      // Continue conversation with tool results - LLM may request more tools
+      llmResponse = await bedrockService.continueWithToolResults(
         history as ChatMessage[],
         message,
-        llmResponse.toolCalls,
-        toolResults,
+        allToolCalls,
+        allToolResults,
         toolsForLlm,
         chatOptions
       );
 
-      res.json({
-        reply: finalResponse.message,
-        toolsUsed: toolsUsed.length > 0 ? toolsUsed : undefined,
-        usage: finalResponse.usage,
-      });
-    } else {
-      // No tool calls, return LLM response directly
-      res.json({
-        reply: llmResponse.message,
-        usage: llmResponse.usage,
-      });
+      console.log(`[ChatController] After tool results: LLM ${llmResponse.toolCalls ? `wants ${llmResponse.toolCalls.length} more tools` : 'is done'}`);
     }
+
+    if (iterations >= MAX_TOOL_ITERATIONS) {
+      console.warn(`[ChatController] Hit max tool iterations (${MAX_TOOL_ITERATIONS})`);
+    }
+
+    console.log(`[ChatController] Completed with ${allToolsUsed.length} total tool calls across ${iterations} iteration(s)`);
+
+    res.json({
+      reply: llmResponse.message,
+      toolsUsed: allToolsUsed.length > 0 ? allToolsUsed : undefined,
+      usage: llmResponse.usage,
+    });
   } catch (error) {
     if (error instanceof McpError) {
       sendError(res, error.message, error.code, error.statusCode);
